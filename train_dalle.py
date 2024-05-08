@@ -1,50 +1,29 @@
 import argparse
-from random import choice
+import sys
+sys.path.insert(0,"/home/mprabhud/phd_projects/digen/taming-transformers/")
+import ipdb
+st = ipdb.set_trace
 from pathlib import Path
-
-# torch
-
+import time
+from glob import glob
+import hydra
+import os
+import shutil
+from omegaconf import DictConfig
 import torch
 from torch.optim import Adam, AdamW
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-
-# vision imports
-
-from PIL import Image
+from torch.utils.data import DataLoader
+from dalle_pytorch import __version__
+from dalle_pytorch import OpenAIDiscreteVAE, VQGanVAE, DiscreteVAE, DALLE
+from dalle_pytorch import distributed_utils
+from dalle_pytorch.loader import TextImageDataset
+# libraries needed for webdataset support
+import webdataset as wds
 from torchvision import transforms as T
-from torch.utils.data import DataLoader, Dataset
-from torchvision.datasets import ImageFolder
-from torchvision.utils import make_grid, save_image
-
-# dalle related classes and utils
-
-from dalle_pytorch import deepspeed_utils
-from dalle_pytorch import OpenAIDiscreteVAE, VQGanVAE1024, DiscreteVAE, DALLE
-from dalle_pytorch.simple_tokenizer import tokenize, tokenizer, VOCAB_SIZE
-
-# argument parsing
-
-parser = argparse.ArgumentParser()
-
-group = parser.add_mutually_exclusive_group(required = False)
-
-group.add_argument('--vae_path', type = str,
-                    help='path to your trained discrete VAE')
-
-group.add_argument('--dalle_path', type = str,
-                    help='path to your partially trained DALL-E')
-
-parser.add_argument('--image_text_folder', type = str, required = True,
-                    help='path to your folder of images and text for learning the DALL-E')
-
-parser.add_argument('--taming', dest='taming', action='store_true')
-
-parser = deepspeed_utils.wrap_arg_parser(parser)
-
-args = parser.parse_args()
-
-# helpers
+from PIL import Image
+from io import BytesIO
 
 def exists(val):
     return val is not None
@@ -55,20 +34,75 @@ VAE_PATH = args.vae_path
 DALLE_PATH = args.dalle_path
 RESUME = exists(DALLE_PATH)
 
-EPOCHS = 20
-BATCH_SIZE = 4
-LEARNING_RATE = 3e-4
-GRAD_CLIP_NORM = 0.5
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size
 
-MODEL_DIM = 512
-TEXT_SEQ_LEN = 256
-DEPTH = 2
-HEADS = 4
-DIM_HEAD = 64
-REVERSIBLE = True
-LOSS_IMG_WEIGHT = 7
-OPTIMIZER = "adam"
-LR_DECAY = False
+    LEARNING_RATE = args.learning_rate
+    GRAD_CLIP_NORM = args.clip_grad_norm
+    LR_DECAY = args.lr_decay
+    SAVE_EVERY_N_STEPS = args.save_every_n_steps
+    KEEP_N_CHECKPOINTS = args.keep_n_checkpoints
+
+    MODEL_DIM = args.dim
+    TEXT_SEQ_LEN = args.text_seq_len
+    DEPTH = args.depth
+    HEADS = args.heads
+    DIM_HEAD = args.dim_head
+    REVERSIBLE = args.reversible
+    LOSS_IMG_WEIGHT = args.loss_img_weight
+    FF_DROPOUT = args.ff_dropout
+    ATTN_DROPOUT = args.attn_dropout
+    STABLE = args.stable_softmax
+    SHIFT_TOKENS = args.shift_tokens
+    ROTARY_EMB = args.rotary_emb
+
+    ATTN_TYPES = tuple(args.attn_types.split(','))
+    SHARED_ATTN_IDS = tuple(args.shared_attn_ids.split(',')) if exists(args.shared_attn_ids) else None
+    SHARED_FF_IDS = tuple(args.shared_ff_ids.split(',')) if exists(args.shared_ff_ids) else None
+    SHARE_INPUT_OUTPUT_EMB = args.share_input_output_emb
+
+    DEEPSPEED_CP_AUX_FILENAME = 'auxiliary.pt'
+    # st()
+
+    if not ENABLE_WEBDATASET:
+        # quit early if you used the wrong folder name
+        pass
+        # assert Path(args.image_text_folder).exists(), f'The path {args.image_text_folder} was not found.'
+    else:
+        # quit early if no tar files were found
+        if Path(args.image_text_folder).is_dir():
+            DATASET = [str(p) for p in Path(args.image_text_folder).glob("**/*") if ".tar" in str(p).lower()] # .name
+            assert len(DATASET) > 0, 'The directory ({}) does not contain any WebDataset/.tar files.'.format(args.image_text_folder)
+            print('Found {} WebDataset .tar(.gz) file(s) under given path {}!'.format(len(DATASET), args.image_text_folder))
+        elif ('http://' in args.image_text_folder.lower()) | ('https://' in args.image_text_folder.lower()):
+            DATASET = f"pipe:curl -L -s {args.image_text_folder} || true"
+            print('Found {} http(s) link under given path!'.format(len(DATASET), args.image_text_folder))
+        elif 'gs://' in args.image_text_folder.lower():
+            DATASET = f"pipe:gsutil cat {args.image_text_folder} || true"
+            print('Found {} GCS link under given path!'.format(len(DATASET), args.image_text_folder))
+        elif '.tar' in args.image_text_folder:
+            DATASET = args.image_text_folder
+            print('Found WebDataset .tar(.gz) file under given path {}!'.format(args.image_text_folder))
+        else:
+            raise Exception('No folder, no .tar(.gz) and no url pointing to tar files provided under {}.'.format(args.image_text_folder))
+
+    # initialize distributed backend
+    # st()
+    distr_backend = distributed_utils.set_backend_from_args(args)
+    distr_backend.initialize()
+
+    using_deepspeed = \
+        distributed_utils.using_backend(distributed_utils.DeepSpeedBackend)
+
+    is_root = distr_backend.is_root_worker()
+
+    # tokenizer
+
+    if exists(args.bpe_path):
+        klass = HugTokenizer if args.hug else YttmTokenizer
+        tokenizer = klass(args.bpe_path)
+    elif args.chinese:
+        tokenizer = ChineseTokenizer()
 
 # reconstitute vae
 
@@ -85,8 +119,8 @@ if RESUME:
     else:
         vae_klass = OpenAIDiscreteVAE if not args.taming else VQGanVAE1024
         vae = vae_klass()
-        
-    dalle_params = dict(        
+
+    dalle_params = dict(
         **dalle_params
     )
     IMAGE_SIZE = vae.image_size
@@ -238,15 +272,21 @@ if LR_DECAY:
 
 # experiment tracker
 
-import wandb
+    if is_root:
+        # st()
+        model_config = dict(
+            depth=DEPTH,
+            heads=HEADS,
+            dim_head=DIM_HEAD
+        )
 
-model_config = dict(
-    depth = DEPTH,
-    heads = HEADS,
-    dim_head = DIM_HEAD
-)
-
-run = wandb.init(project = 'dalle_train_transformer', resume = RESUME, config = model_config)
+        run = wandb.init(
+            project=args.wandb_name,
+            entity=args.wandb_entity,
+            resume=False,
+            config=dict(args),
+            mode="disabled" if args.debug else "online"
+        )
 
 # distribute
 
@@ -296,10 +336,16 @@ for epoch in range(EPOCHS):
                 'lr': opt.param_groups[0]["lr"]
             }
 
-        if i % 100 == 0:
-            sample_text = text[:1]
-            token_list = sample_text.masked_select(sample_text != 0).tolist()
-            decoded_text = tokenizer.decode(token_list)
+            if i % SAVE_EVERY_N_STEPS == 0:
+                # st()
+                run_name = wandb.run.name
+                os.makedirs(f"checkpoints/{run_name}", exist_ok=True)
+                save_model(f"checkpoints/{run_name}/model.pt", epoch=epoch)
+            # st()
+            if i % args.log_images_freq == 0 and is_root:
+                sample_text = text[:1]
+                token_list = sample_text.masked_select(sample_text != 0).tolist()
+                decoded_text = tokenizer.decode(token_list)
 
             image = dalle.generate_images(
                 text[:1],

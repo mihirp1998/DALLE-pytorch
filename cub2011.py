@@ -1,14 +1,15 @@
 import os
 import pandas as pd
 from torchvision.datasets.folder import default_loader
+import ipdb
+st = ipdb.set_trace
 from torchvision.datasets.utils import download_url
 from torch.utils.data import Dataset
 
 
 class Cub2011(Dataset):
     base_folder = 'CUB_200_2011/images'
-    # url = 'http://www.vision.caltech.edu/visipedia-data/CUB-200-2011/CUB_200_2011.tgz' # old url, doesn't work
-    url = 'https://data.caltech.edu/records/65de6-vp158/files/CUB_200_2011.tgz?download=1'
+    url = 'http://www.vision.caltech.edu/visipedia-data/CUB-200-2011/CUB_200_2011.tgz'
     filename = 'CUB_200_2011.tgz'
     tgz_md5 = '97eceeb196236b17998738112f37df78'
 
@@ -73,14 +74,15 @@ class Cub2011(Dataset):
         sample = self.data.iloc[idx]
         path = os.path.join(self.root, self.base_folder, sample.filepath)
         target = sample.target - 1  # Targets start at 1 by default, so shift to 0
+        filename = sample.filepath
         img = self.loader(path)
 
         if self.transform is not None:
             img = self.transform(img)
 
-        return img, target
+        return img, target, filename
 
-if __name__ == '__main__':
-    dataset = Cub2011(root='data', train=True, download=True)
-    print(len(dataset))
-    print(dataset[0])
+if __name__ == "__main__":
+    out = Cub2011(root="/home/mprabhud/vision_datasets", download=True)
+    st()
+    print("hello")

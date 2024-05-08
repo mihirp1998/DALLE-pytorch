@@ -14,6 +14,8 @@ mode: forward_reverse_partial # one of "forward_only", "forward_forward", "forwa
 use_wandb: True
 wandb_num_images: 4
 
+log_images_freq: 1000
+
 vae_path: null
 
 dalle_path: null
