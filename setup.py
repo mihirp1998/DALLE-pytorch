@@ -1,16 +1,14 @@
 from setuptools import setup, find_packages
-exec(open('dalle_pytorch/version.py').read())
 
 setup(
   name = 'dalle-pytorch',
   packages = find_packages(),
   include_package_data = True,
-  version = __version__,
+  version = '0.7.3',
   license='MIT',
   description = 'DALL-E - Pytorch',
   author = 'Phil Wang',
   author_email = 'lucidrains@gmail.com',
-  long_description_content_type = 'text/markdown',
   url = 'https://github.com/lucidrains/dalle-pytorch',
   keywords = [
     'artificial intelligence',
@@ -21,20 +19,14 @@ setup(
   install_requires=[
     'axial_positional_embedding',
     'DALL-E',
-    'einops>=0.3.2',
+    'einops>=0.3',
     'ftfy',
-    'packaging',
     'pillow',
     'regex',
-    'rotary-embedding-torch',
-    'taming-transformers-rom1504',
-    'tokenizers',
+    'taming-transformers',
     'torch>=1.6',
     'torchvision',
-    'transformers',
-    'tqdm',
-    'youtokentome',
-    'WebDataset'
+    'tqdm'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
