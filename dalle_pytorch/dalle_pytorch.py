@@ -2,14 +2,13 @@ from math import log2, sqrt
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
-import numpy as np
 
 from axial_positional_embedding import AxialPositionalEmbedding
 from einops import rearrange
 
-from dalle_pytorch import distributed_utils
-from dalle_pytorch.vae import OpenAIDiscreteVAE, VQGanVAE
-from dalle_pytorch.transformer import Transformer, DivideMax
+from dalle_pytorch.vae import OpenAIDiscreteVAE
+from dalle_pytorch.vae import VQGanVAE1024
+from dalle_pytorch.transformer import Transformer
 
 # helpers
 
@@ -19,11 +18,10 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
-class always():
-    def __init__(self, val):
-        self.val = val
-    def __call__(self, x, *args, **kwargs):
-        return self.val
+def always(val):
+    def inner(*args, **kwargs):
+        return val
+    return inner
 
 def is_empty(t):
     return t.nelement() == 0
@@ -31,13 +29,6 @@ def is_empty(t):
 def masked_mean(t, mask, dim = 1):
     t = t.masked_fill(~mask[:, :, None], 0.)
     return t.sum(dim = 1) / mask.sum(dim = 1)[..., None]
-
-def prob_mask_like(shape, prob, device):
-    return torch.zeros(shape, device = device).float().uniform_(0, 1) < prob
-
-def set_requires_grad(model, value):
-    for param in model.parameters():
-        param.requires_grad = value
 
 def eval_decorator(fn):
     def inner(model, *args, **kwargs):
@@ -50,16 +41,6 @@ def eval_decorator(fn):
 
 # sampling helpers
 
-def log(t, eps = 1e-20):
-    return torch.log(t.clamp(min = eps))
-
-def gumbel_noise(t):
-    noise = torch.zeros_like(t).uniform_(0, 1)
-    return -log(-log(noise))
-
-def gumbel_sample(t, temperature = 1., dim = -1):
-    return ((t / temperature) + gumbel_noise(t)).argmax(dim = dim)
-
 def top_k(logits, thres = 0.5):
     num_logits = logits.shape[-1]
     k = max(int((1 - thres) * num_logits), 1)
@@ -67,20 +48,6 @@ def top_k(logits, thres = 0.5):
     probs = torch.full_like(logits, float('-inf'))
     probs.scatter_(1, ind, val)
     return probs
-
-class SharedEmbedding(nn.Embedding):
-    def __init__(self, linear, start_index, end_index, **kwargs):
-        super().__init__(end_index - start_index, linear.weight.shape[1], **kwargs)
-        del self.weight
-
-        self.linear = linear
-        self.start_index = start_index
-        self.end_index = end_index
-
-    def forward(self, input):
-        return F.embedding(
-            input, self.linear.weight[self.start_index:self.end_index], self.padding_idx, self.max_norm,
-            self.norm_type, self.scale_grad_by_freq, self.sparse)
 
 # discrete vae class
 
@@ -111,23 +78,19 @@ class DiscreteVAE(nn.Module):
         smooth_l1_loss = False,
         temperature = 0.9,
         straight_through = False,
-        reinmax = False,
         kl_div_loss_weight = 0.,
-        normalization = ((*((0.5,) * 3), 0), (*((0.5,) * 3), 1))
+        normalization = ((0.5,) * 3, (0.5,) * 3)
     ):
         super().__init__()
         assert log2(image_size).is_integer(), 'image size must be a power of 2'
         assert num_layers >= 1, 'number of layers must be greater than or equal to 1'
         has_resblocks = num_resnet_blocks > 0
 
-        self.channels = channels
         self.image_size = image_size
         self.num_tokens = num_tokens
         self.num_layers = num_layers
         self.temperature = temperature
         self.straight_through = straight_through
-        self.reinmax = reinmax
-
         self.codebook = nn.Embedding(num_tokens, codebook_dim)
 
         hdim = hidden_dim
@@ -166,21 +129,7 @@ class DiscreteVAE(nn.Module):
         self.kl_div_loss_weight = kl_div_loss_weight
 
         # take care of normalization within class
-        self.normalization = tuple(map(lambda t: t[:channels], normalization))
-
-        self._register_external_parameters()
-
-    def _register_external_parameters(self):
-        """Register external parameters for DeepSpeed partitioning."""
-        if (
-                not distributed_utils.is_distributed
-                or not distributed_utils.using_backend(
-                    distributed_utils.DeepSpeedBackend)
-        ):
-            return
-
-        deepspeed = distributed_utils.backend.backend_module
-        deepspeed.zero.register_external_parameter(self, self.codebook.weight)
+        self.normalization = normalization
 
     def norm(self, images):
         if not exists(self.normalization):
@@ -195,7 +144,7 @@ class DiscreteVAE(nn.Module):
     @torch.no_grad()
     @eval_decorator
     def get_codebook_indices(self, images):
-        logits = self(images, return_logits = True)
+        logits = self.forward(images, return_logits = True)
         codebook_indices = logits.argmax(dim = 1).flatten(1)
         return codebook_indices
 
@@ -230,20 +179,8 @@ class DiscreteVAE(nn.Module):
             return logits # return logits for getting hard image indices for DALL-E training
 
         temp = default(temp, self.temperature)
-
-        one_hot = F.gumbel_softmax(logits, tau = temp, dim = 1, hard = self.straight_through)
-
-        if self.straight_through and self.reinmax:
-            # use reinmax for better second-order accuracy - https://arxiv.org/abs/2304.08612
-            # algorithm 2
-            one_hot = one_hot.detach()
-            π0 = logits.softmax(dim = 1)
-            π1 = (one_hot + (logits / temp).softmax(dim = 1)) / 2
-            π1 = ((log(π1) - logits).detach() + logits).softmax(dim = 1)
-            π2 = 2 * π1 - 0.5 * π0
-            one_hot = π2 - π2.detach() + one_hot
-
-        sampled = einsum('b n h w, n d -> b d h w', one_hot, self.codebook.weight)
+        soft_one_hot = F.gumbel_softmax(logits, tau = temp, dim = 1, hard = self.straight_through)
+        sampled = einsum('b n h w, n d -> b d h w', soft_one_hot, self.codebook.weight)
         out = self.decoder(sampled)
 
         if not return_loss:
@@ -290,7 +227,7 @@ class CLIP(nn.Module):
         super().__init__()
         self.text_emb = nn.Embedding(num_text_tokens, dim_text)
         self.text_pos_emb = nn.Embedding(text_seq_len, dim_text)
-        self.text_transformer = Transformer(causal = False, seq_len = text_seq_len, dim = dim_text, depth = text_enc_depth, heads = text_heads, rotary_emb = False)
+        self.text_transformer = Transformer(causal = False, seq_len = text_seq_len, dim = dim_text, depth = text_enc_depth, heads = text_heads)
         self.to_text_latent = nn.Linear(dim_text, dim_latent, bias = False)
 
         assert visual_image_size % visual_patch_size == 0, 'Image dimensions must be divisible by the patch size.'
@@ -300,7 +237,7 @@ class CLIP(nn.Module):
         self.visual_patch_size = visual_patch_size
         self.to_visual_embedding = nn.Linear(patch_dim, dim_image)
         self.visual_pos_emb = nn.Embedding(num_patches, dim_image)
-        self.visual_transformer = Transformer(causal = False, seq_len = num_patches, dim = dim_image, depth = visual_enc_depth, heads = visual_heads, rotary_emb = False)
+        self.visual_transformer = Transformer(causal = False, seq_len = num_patches, dim = dim_image, depth = visual_enc_depth, heads = visual_heads)
         self.to_visual_latent = nn.Linear(dim_image, dim_latent, bias = False)
 
         self.temperature = nn.Parameter(torch.tensor(1.))
@@ -365,28 +302,21 @@ class DALLE(nn.Module):
         ff_dropout = 0,
         sparse_attn = False,
         attn_types = None,
-        loss_img_weight = 7,
-        stable = False,
-        sandwich_norm = False,
-        shift_tokens = True,
-        rotary_emb = True,
-        shared_attn_ids = None,
-        shared_ff_ids = None,
-        share_input_output_emb = False,
-        optimize_for_inference = False,
+        loss_img_weight = 7
     ):
         super().__init__()
-        assert isinstance(vae, (DiscreteVAE, OpenAIDiscreteVAE, VQGanVAE)), 'vae must be an instance of DiscreteVAE'
+        assert isinstance(vae, (DiscreteVAE, OpenAIDiscreteVAE, VQGanVAE1024)), 'vae must be an instance of DiscreteVAE'
 
         image_size = vae.image_size
         num_image_tokens = vae.num_tokens
         image_fmap_size = (vae.image_size // (2 ** vae.num_layers))
         image_seq_len = image_fmap_size ** 2
 
-        num_text_tokens = num_text_tokens + text_seq_len  # reserve unique padding tokens for each position (text seq len)
+        self.text_emb = nn.Embedding(num_text_tokens, dim)
+        self.image_emb = nn.Embedding(num_image_tokens, dim)
 
-        self.text_pos_emb = nn.Embedding(text_seq_len + 1, dim) if not rotary_emb else always(0) # +1 for <bos>
-        self.image_pos_emb = AxialPositionalEmbedding(dim, axial_shape = (image_fmap_size, image_fmap_size)) if not rotary_emb else always(0)
+        self.text_pos_emb = nn.Embedding(text_seq_len + 1, dim) # +1 for <bos>
+        self.image_pos_emb = AxialPositionalEmbedding(dim, axial_shape = (image_fmap_size, image_fmap_size))
 
         self.num_text_tokens = num_text_tokens # for offsetting logits index and calculating cross entropy loss
         self.num_image_tokens = num_image_tokens
@@ -400,7 +330,6 @@ class DALLE(nn.Module):
         self.total_seq_len = seq_len
 
         self.vae = vae
-        set_requires_grad(self.vae, False) # freeze VAE from being trained
 
         self.transformer = Transformer(
             dim = dim,
@@ -414,32 +343,13 @@ class DALLE(nn.Module):
             ff_dropout = ff_dropout,
             attn_types = attn_types,
             image_fmap_size = image_fmap_size,
-            sparse_attn = sparse_attn,
-            stable = stable,
-            sandwich_norm = sandwich_norm,
-            shift_tokens = shift_tokens,
-            rotary_emb = rotary_emb,
-            shared_attn_ids = shared_attn_ids,
-            shared_ff_ids = shared_ff_ids,
-            optimize_for_inference = optimize_for_inference,
+            sparse_attn = sparse_attn
         )
-
-        self.stable = stable
-
-        if stable:
-            self.norm_by_max = DivideMax(dim = -1)
 
         self.to_logits = nn.Sequential(
             nn.LayerNorm(dim),
             nn.Linear(dim, self.total_tokens),
         )
-
-        if share_input_output_emb:
-            self.text_emb = SharedEmbedding(self.to_logits[1], 0, num_text_tokens)
-            self.image_emb = SharedEmbedding(self.to_logits[1], num_text_tokens, total_tokens)
-        else:
-            self.text_emb = nn.Embedding(num_text_tokens, dim)
-            self.image_emb = nn.Embedding(num_image_tokens, dim)
 
         seq_range = torch.arange(seq_len)
         logits_range = torch.arange(total_tokens)
@@ -452,56 +362,8 @@ class DALLE(nn.Module):
             ((seq_range < text_seq_len) & (logits_range >= num_text_tokens))
         )
 
-        self.register_buffer('logits_mask', logits_mask, persistent=False)
+        self.register_buffer('logits_mask', logits_mask)
         self.loss_img_weight = loss_img_weight
-
-
-    @torch.no_grad()
-    @eval_decorator
-    def generate_texts(
-        self,
-        tokenizer,
-        text = None,
-        *,
-        filter_thres = 0.5,
-        temperature = 1.
-    ):
-        text_seq_len = self.text_seq_len
-        if text is None or text == "":
-            text_tokens = torch.tensor([[0]]).cuda()
-        else:
-            text_tokens = torch.tensor(tokenizer.tokenizer.encode(text)).cuda().unsqueeze(0)
-
-        for _ in range(text_tokens.shape[1], text_seq_len):
-            device = text_tokens.device
-
-            tokens = self.text_emb(text_tokens)
-            tokens += self.text_pos_emb(torch.arange(text_tokens.shape[1], device = device))
-
-            seq_len = tokens.shape[1]
-
-            output_transf = self.transformer(tokens)
-
-            if self.stable:
-                output_transf = self.norm_by_max(output_transf)
-
-            logits = self.to_logits(output_transf)
-
-            # mask logits to make sure text predicts text (except last token), and image predicts image
-
-            logits_mask = self.logits_mask[:, :seq_len]
-            max_neg_value = -torch.finfo(logits.dtype).max
-            logits.masked_fill_(logits_mask, max_neg_value)
-            logits = logits[:, -1, :]
-
-            filtered_logits = top_k(logits, thres = filter_thres)
-            sample = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)
-
-            text_tokens = torch.cat((text_tokens, sample[:, None]), dim=-1)
-
-        padding_tokens = set(np.arange(self.text_seq_len) + (self.num_text_tokens - self.text_seq_len))
-        texts = [tokenizer.tokenizer.decode(text_token, pad_tokens=padding_tokens) for text_token in text_tokens]
-        return text_tokens, texts
 
     @torch.no_grad()
     @eval_decorator
@@ -510,12 +372,11 @@ class DALLE(nn.Module):
         text,
         *,
         clip = None,
+        mask = None,
         filter_thres = 0.5,
         temperature = 1.,
         img = None,
-        num_init_img_tokens = None,
-        cond_scale = 1.,
-        use_cache = False,
+        num_init_img_tokens = None
     ):
         vae, text_seq_len, image_seq_len, num_text_tokens = self.vae, self.text_seq_len, self.image_seq_len, self.num_text_tokens
         total_len = text_seq_len + image_seq_len
@@ -534,21 +395,22 @@ class DALLE(nn.Module):
             indices = indices[:, :num_img_tokens]
             out = torch.cat((out, indices), dim = -1)
 
-        prev_cache = None
-        cache = {} if use_cache else None
         for cur_len in range(out.shape[1], total_len):
             is_image = cur_len >= text_seq_len
 
             text, image = out[:, :text_seq_len], out[:, text_seq_len:]
 
-            logits = self.forward_with_cond_scale(text, image, cond_scale = cond_scale, cache = cache)
-            logits = logits[:, -1, :]
+            logits = self(text, image, mask = mask)[:, -1, :]
 
             filtered_logits = top_k(logits, thres = filter_thres)
-            sample = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)
+            probs = F.softmax(filtered_logits / temperature, dim = -1)
+            sample = torch.multinomial(probs, 1)
 
             sample -= (num_text_tokens if is_image else 0) # offset sampled token if it is an image token, since logit space is composed of text and then image tokens
-            out = torch.cat((out, sample[:, None]), dim=-1)
+            out = torch.cat((out, sample), dim=-1)
+
+            if out.shape[1] <= text_seq_len:
+                mask = F.pad(mask, (0, 1), value = True)
 
         text_seq = out[:, :text_seq_len]
 
@@ -561,43 +423,20 @@ class DALLE(nn.Module):
 
         return images
 
-    def forward_with_cond_scale(self, *args, cond_scale = 1, cache = None, **kwargs):
-        if cond_scale == 1:
-            return self(*args, **kwargs)
-
-        prev_cache = cache.copy() if exists(cache) else None
-        logits = self(*args, cache = cache, **kwargs)
-
-        # discovery by Katherine Crowson
-        # https://twitter.com/RiversHaveWings/status/1478093658716966912
-        null_cond_logits = self(*args, null_cond_prob = 1., cache = prev_cache, **kwargs)
-        return null_cond_logits + (logits - null_cond_logits) * cond_scale
-
     def forward(
         self,
         text,
         image = None,
-        return_loss = False,
-        null_cond_prob = 0.,
-        cache = None,
+        mask = None,
+        return_loss = False
     ):
         assert text.shape[-1] == self.text_seq_len, f'the length {text.shape[-1]} of the text tokens you passed in does not have the correct length ({self.text_seq_len})'
-        batch, device, total_seq_len = text.shape[0], text.device, self.total_seq_len
+        device, total_seq_len = text.device, self.total_seq_len
 
-        # randomly remove text condition with <null_cond_prob> probability
+        text = F.pad(text, (1, 0), value = 0) # use padding as <bos>
 
-        if null_cond_prob > 0:
-            null_mask = prob_mask_like((batch,), null_cond_prob, device = device)
-            text *= rearrange(~null_mask, 'b -> b 1')
-
-        # make sure padding in text tokens get unique padding token id
-
-        text_range = torch.arange(self.text_seq_len, device = device) + (self.num_text_tokens - self.text_seq_len)
-        text = torch.where(text == 0, text_range, text)
-
-        # add <bos>
-
-        text = F.pad(text, (1, 0), value = 0)
+        if exists(mask):
+            mask = F.pad(mask, (1, 0), value = True)
 
         tokens = self.text_emb(text)
         tokens += self.text_pos_emb(torch.arange(text.shape[1], device = device))
@@ -609,8 +448,7 @@ class DALLE(nn.Module):
 
             if is_raw_image:
                 image_size = self.vae.image_size
-                channels = self.vae.channels
-                assert tuple(image.shape[1:]) == (channels, image_size, image_size), f'invalid image of dimensions {image.shape} passed in during training'
+                assert tuple(image.shape[1:]) == (3, image_size, image_size), f'invalid image of dimensions {image.shape} passed in during training'
 
                 image = self.vae.get_codebook_indices(image)
 
@@ -622,50 +460,35 @@ class DALLE(nn.Module):
             tokens = torch.cat((tokens, image_emb), dim = 1)
 
             seq_len += image_len
+            if exists(mask):
+                mask = F.pad(mask, (0, image_emb.shape[1]), value = True)
 
         # when training, if the length exceeds the total text + image length
         # remove the last token, since it needs not to be trained
-
         if tokens.shape[1] > total_seq_len:
             seq_len -= 1
             tokens = tokens[:, :-1]
 
-        if self.stable:
-            alpha = 0.1
-            tokens = tokens * alpha + tokens.detach() * (1 - alpha)
+            if exists(mask):
+                mask = mask[:, :-1]
 
-        if exists(cache) and cache.get('offset'):
-            tokens = tokens[:, -1:]
-        out = self.transformer(tokens, cache=cache)
-
-        if self.stable:
-            out = self.norm_by_max(out)
-
+        out = self.transformer(tokens, mask = mask)
         logits = self.to_logits(out)
 
         # mask logits to make sure text predicts text (except last token), and image predicts image
-
         logits_mask = self.logits_mask[:, :seq_len]
-        if exists(cache) and cache.get('offset'):
-            logits_mask = logits_mask[:, -1:]
         max_neg_value = -torch.finfo(logits.dtype).max
         logits.masked_fill_(logits_mask, max_neg_value)
-
-        if exists(cache):
-            cache['offset'] = cache.get('offset', 0) + logits.shape[1]
 
         if not return_loss:
             return logits
 
         assert exists(image), 'when training, image must be supplied'
-
         offsetted_image = image + self.num_text_tokens
         labels = torch.cat((text[:, 1:], offsetted_image), dim = 1)
 
         logits = rearrange(logits, 'b n c -> b c n')
-
-        loss_text = F.cross_entropy(logits[:, :, :self.text_seq_len], labels[:, :self.text_seq_len])
-        loss_img = F.cross_entropy(logits[:, :, self.text_seq_len:], labels[:, self.text_seq_len:])
-
+        loss_text = F.cross_entropy(logits[:, :, :self.text_seq_len], labels[:, :self.text_seq_len], ignore_index=0)
+        loss_img = F.cross_entropy(logits[:, :, self.text_seq_len:], labels[:, self.text_seq_len:], ignore_index=0)
         loss = (loss_text + self.loss_img_weight * loss_img) / (self.loss_img_weight + 1)
         return loss
