@@ -1,0 +1,6 @@
+# @package _global_
+dataset: pets_old
+num_patch: 256
+vqgan: vq-f16-256
+classify: False
+shuffle: False

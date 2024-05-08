@@ -1,0 +1,5 @@
+# @package _global_
+dataset: cifar10
+num_patch: 256
+vqgan: vq-f16
+classify: True

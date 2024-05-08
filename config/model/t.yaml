@@ -1,0 +1,4 @@
+# @package _global_
+num_encoder_layers: 24
+embed_style: seperate
+arch: transformer

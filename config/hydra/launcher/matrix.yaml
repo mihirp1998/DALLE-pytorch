@@ -1,0 +1,14 @@
+defaults:
+  - submitit_slurm
+signal_delay_s: 120
+timeout_min: 360
+partition: kate_reserved
+gres: gpu:1
+cpus_per_task: 4
+mem_gb: 30
+nodes: 1
+# constraint: A5000|rtx6000|rtx2080ti|rtx3080|A6000
+max_num_timeout: 100
+# exclude: matrix-0-22,matrix-1-12,matrix-0-26
+submitit_folder: out_slurm
+name: inverse

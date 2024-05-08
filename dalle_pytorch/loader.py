@@ -1,6 +1,10 @@
 from pathlib import Path
+import torchvision
 from random import randint, choice
 
+import ipdb
+st = ipdb.set_trace
+import json
 import PIL
 
 from torch.utils.data import Dataset
@@ -25,21 +29,35 @@ class TextImageDataset(Dataset):
         super().__init__()
         self.shuffle = shuffle
         path = Path(folder)
-
-        text_files = [*path.glob('**/*.txt')]
         image_files = [
             *path.glob('**/*.png'), *path.glob('**/*.jpg'),
-            *path.glob('**/*.jpeg'), *path.glob('**/*.bmp')
+            *path.glob('**/*.jpeg'), *path.glob('**/*.bmp'),*path.glob('**/*.JPEG')
         ]
+        # st()
+        imagenet_json = json.load(open("dalle_pytorch/imagenet.json")),
+        imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}
+        
+        folder_names = [str(image_file).split("/")[-2] for image_file in image_files]
+        class_names = [imagenet_folder_name[folder_name] for folder_name in folder_names]
+        self.class_names= [class_name.replace("_"," ") for class_name in class_names]
+        self.class_names= [f"a photo of a {class_name}" for class_name in self.class_names]
+        self.image_files = image_files
+        # st()
+        # self.dataset = torchvision.datasets.CIFAR10(root="/home/mprabhud/vision_datasets", download=True)
+        
+        
+        
+        # text_files = [*path.glob('**/*.txt')]
+        
 
-        text_files = {text_file.stem: text_file for text_file in text_files}
-        image_files = {image_file.stem: image_file for image_file in image_files}
+        # text_files = {text_file.stem: text_file for text_file in text_files}
+        # image_files = {image_file.stem: image_file for image_file in image_files}
 
-        keys = (image_files.keys() & text_files.keys())
+        # keys = (image_files.keys() & text_files.keys())
 
-        self.keys = list(keys)
-        self.text_files = {k: v for k, v in text_files.items() if k in keys}
-        self.image_files = {k: v for k, v in image_files.items() if k in keys}
+        # self.keys = list(keys)
+        # self.text_files = {k: v for k, v in text_files.items() if k in keys}
+        # self.image_files = {k: v for k, v in image_files.items() if k in keys}
         self.text_len = text_len
         self.truncate_captions = truncate_captions
         self.resize_ratio = resize_ratio
@@ -57,7 +75,7 @@ class TextImageDataset(Dataset):
         ])
 
     def __len__(self):
-        return len(self.keys)
+        return len(self.image_files)
 
     def random_sample(self):
         return self.__getitem__(randint(0, self.__len__() - 1))
@@ -73,19 +91,19 @@ class TextImageDataset(Dataset):
         return self.sequential_sample(ind=ind)
 
     def __getitem__(self, ind):
-        key = self.keys[ind]
+        # key = self.keys[ind]
+        # st()
+        description = self.class_names[ind]
+        image_file = self.image_files[ind]
 
-        text_file = self.text_files[key]
-        image_file = self.image_files[key]
-
-        descriptions = text_file.read_text().split('\n')
-        descriptions = list(filter(lambda t: len(t) > 0, descriptions))
-        try:
-            description = choice(descriptions)
-        except IndexError as zero_captions_in_file_ex:
-            print(f"An exception occurred trying to load file {text_file}.")
-            print(f"Skipping index {ind}")
-            return self.skip_sample(ind)
+        # descriptions = text_file.read_text().split('\n')
+        # descriptions = list(filter(lambda t: len(t) > 0, descriptions))
+        # try:
+        #     description = choice(descriptions)
+        # except IndexError as zero_captions_in_file_ex:
+        #     print(f"An exception occurred trying to load file {text_file}.")
+        #     print(f"Skipping index {ind}")
+        #     return self.skip_sample(ind)
 
         tokenized_text = self.tokenizer.tokenize(
             description,

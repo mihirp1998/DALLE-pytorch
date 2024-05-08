@@ -1,0 +1,5 @@
+# @package _global_
+dataset: flowers
+num_patch: 4096
+vqgan: vq-f4
+classify: True

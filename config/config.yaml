@@ -1,0 +1,131 @@
+defaults:
+  - _self_  # Override values within this file with values in selected files.
+  - model: t
+  - data: cifar
+  - exp: ff
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+debug: False
+project: invert_seg
+device: cuda
+
+# mode
+mode: forward_reverse_partial # one of "forward_only", "forward_forward", "forward_reverse_full", "forward_reverse_partial"
+
+wandb_num_images: 4
+
+vae_path: null
+
+dalle_path: null
+
+vqgan_model_path: null
+# help='path to your trained VQGAN weights. This should be a .ckpt file. (only valid when taming option is enabled)')
+
+vqgan_config_path: null
+# help='path to your trained VQGAN config. This should be a .yaml file. (only valid when taming option is enabled)')
+
+image_text_folder: null
+# help='path to your folder of images and text for learning the DALL-E')
+
+wds: ''
+# help = 'Comma separated list of WebDataset (1) image and (2) text column names. Must contain 2 values, e.g. img,cap.')
+
+truncate_captions: False
+# help='Captions passed in which exceed the max token length will be truncated if this is set.')
+
+resize_ratio: 0.75
+# help='Random resized crop lower ratio')
+
+chinese: False
+taming: False
+hug: False
+bpe_path: null
+# help='path to your BPE json file')
+
+dalle_output_file_name: dalle
+# help='output_file_name')
+
+deepspeed: null
+distributed_backend: null
+fp16: False
+# help='(experimental) - Enable DeepSpeed 16 bit precision. Reduces VRAM.')
+
+
+amp: False
+# help='Apex "O1" automatic mixed precision. More stable than 16 bit precision. Can\'t be used in conjunction with deepspeed zero stages 1-3.')
+
+wandb_name: dalle_train_transformer
+# help='Name W&B will use when saving results.\ne.g. `--wandb_name "coco2017-full-sparse"`')
+
+wandb_entity: null
+# help='(optional) Name of W&B team/entity to log to.')
+
+stable_softmax: False
+# help='Prevent values from becoming too large during softmax. Helps with stability in fp16 and Mixture of Quantization training.')
+
+flops_profiler: False
+epochs: 20
+save_every_n_steps: 1000
+keep_n_checkpoints: null
+
+batch_size: 4
+
+ga_steps: 1
+# 'Number of steps to accumulate gradients across per each iteration. DeepSpeed only.')
+learning_rate: 3e-4
+# Learning rate
+clip_grad_norm: 0.5
+# 'Clip gradient norm'
+lr_decay: False
+
+dim: 512
+# help = 'Model dimension')
+
+text_seq_len: 256
+# help = 'Text sequence length')
+
+depth: 2
+# help = 'Model depth')
+
+heads: 8
+# help = 'Model number of heads')
+
+dim_head: 64
+# help = 'Model head dimension')
+
+ff_dropout: 0.0
+# Feed forward dropout.')
+
+attn_dropout: 0.0
+# Feed forward dropout.')
+
+reversible: False
+
+loss_img_weight: 7
+# help = 'Image loss weight')
+
+attn_types: 'full'
+# help = 'comma separated list of attention types. attention type can be: full or sparse or axial_row or axial_col or conv_like.')
+
+shift_tokens: False
+# 'Use the shift tokens feature', action = 'store_true')
+
+rotary_emb: False
+# 'Use rotary embeddings', action = 'store_true')
+
+shared_attn_ids: null
+# , type = str, help = 'Comma separated list of shared attention layer ids. Default: sharing is disabled')
+
+shared_ff_ids: null
+# , type = str, help = 'Comma separated list of shared feed forward layer ids. Default: sharing is disabled')
+
+share_input_output_emb: False
+#  'Share input and output embeddings', action = 'store_true')
+
+# early stopping
+patience:  1000
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
