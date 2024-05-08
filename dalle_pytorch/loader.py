@@ -7,6 +7,8 @@ st = ipdb.set_trace
 import json
 import PIL
 
+from cub2011 import Cub2011
+
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 
@@ -28,21 +30,28 @@ class TextImageDataset(Dataset):
         """
         super().__init__()
         self.shuffle = shuffle
-        path = Path(folder)
-        image_files = [
-            *path.glob('**/*.png'), *path.glob('**/*.jpg'),
-            *path.glob('**/*.jpeg'), *path.glob('**/*.bmp'),*path.glob('**/*.JPEG')
-        ]
-        # st()
-        imagenet_json = json.load(open("dalle_pytorch/imagenet.json")),
-        imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}
         
-        folder_names = [str(image_file).split("/")[-2] for image_file in image_files]
-        class_names = [imagenet_folder_name[folder_name] for folder_name in folder_names]
-        self.class_names= [class_name.replace("_"," ") for class_name in class_names]
-        self.class_names= [f"a photo of a {class_name}" for class_name in self.class_names]
-        self.image_files = image_files
-        # st()
+        
+        if folder == "cub200":
+            self.dataset = Cub2011(root="/home/mprabhud/vision_datasets", download=True)
+            self.dataset_name = "cub200"
+            
+        else:
+            path = Path(folder)
+            image_files = [
+                *path.glob('**/*.png'), *path.glob('**/*.jpg'),
+                *path.glob('**/*.jpeg'), *path.glob('**/*.bmp'),*path.glob('**/*.JPEG')
+            ]
+
+
+            imagenet_json = json.load(open("dalle_pytorch/imagenet.json")),
+            imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}        
+            folder_names = [str(image_file).split("/")[-2] for image_file in image_files]
+            class_names = [imagenet_folder_name[folder_name] for folder_name in folder_names]
+            self.class_names= [class_name.replace("_"," ") for class_name in class_names]
+            # self.class_names= [f"a photo of a {class_name}" for class_name in self.class_names]
+            self.image_files = image_files
+
         # self.dataset = torchvision.datasets.CIFAR10(root="/home/mprabhud/vision_datasets", download=True)
         
         
@@ -75,7 +84,10 @@ class TextImageDataset(Dataset):
         ])
 
     def __len__(self):
-        return len(self.image_files)
+        if self.dataset_name == "cub200":
+            return len(self.dataset)
+        else:
+            return len(self.image_files)
 
     def random_sample(self):
         return self.__getitem__(randint(0, self.__len__() - 1))
@@ -91,31 +103,31 @@ class TextImageDataset(Dataset):
         return self.sequential_sample(ind=ind)
 
     def __getitem__(self, ind):
-        # key = self.keys[ind]
-        # st()
-        description = self.class_names[ind]
-        image_file = self.image_files[ind]
+        if self.dataset_name == "cub200":
+            image, target, filename = self.dataset[ind]
+            # st()
+            description = filename.split("/")[0].split(".")[1].replace("_"," ")
+            image_tensor = self.image_transform(image)
+            tokenized_text = self.tokenizer.tokenize(
+                description,
+                self.text_len,
+                truncate_text=self.truncate_captions
+            ).squeeze(0)            
+        else:
+            description = self.class_names[ind]
+            image_file = self.image_files[ind]
 
-        # descriptions = text_file.read_text().split('\n')
-        # descriptions = list(filter(lambda t: len(t) > 0, descriptions))
-        # try:
-        #     description = choice(descriptions)
-        # except IndexError as zero_captions_in_file_ex:
-        #     print(f"An exception occurred trying to load file {text_file}.")
-        #     print(f"Skipping index {ind}")
-        #     return self.skip_sample(ind)
-
-        tokenized_text = self.tokenizer.tokenize(
-            description,
-            self.text_len,
-            truncate_text=self.truncate_captions
-        ).squeeze(0)
-        try:
-            image_tensor = self.image_transform(PIL.Image.open(image_file))
-        except (PIL.UnidentifiedImageError, OSError) as corrupt_image_exceptions:
-            print(f"An exception occurred trying to load file {image_file}.")
-            print(f"Skipping index {ind}")
-            return self.skip_sample(ind)
+            tokenized_text = self.tokenizer.tokenize(
+                description,
+                self.text_len,
+                truncate_text=self.truncate_captions
+            ).squeeze(0)
+            try:
+                image_tensor = self.image_transform(PIL.Image.open(image_file))
+            except (PIL.UnidentifiedImageError, OSError) as corrupt_image_exceptions:
+                print(f"An exception occurred trying to load file {image_file}.")
+                print(f"Skipping index {ind}")
+                return self.skip_sample(ind)
 
         # Success
         return tokenized_text, image_tensor

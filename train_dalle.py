@@ -3,7 +3,6 @@ import sys
 sys.path.insert(0,"/home/mprabhud/phd_projects/digen/taming-transformers/")
 import ipdb
 st = ipdb.set_trace
-# st()
 from pathlib import Path
 import time
 from glob import glob
@@ -11,143 +10,21 @@ import hydra
 import os
 import shutil
 from omegaconf import DictConfig
-
 import torch
 import wandb  # Quit early if user doesn't have wandb installed.
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
-
 from dalle_pytorch import __version__
 from dalle_pytorch import OpenAIDiscreteVAE, VQGanVAE, DiscreteVAE, DALLE
 from dalle_pytorch import distributed_utils
 from dalle_pytorch.loader import TextImageDataset
-
-
 # libraries needed for webdataset support
-
 import webdataset as wds
 from torchvision import transforms as T
 from PIL import Image
 from io import BytesIO
-
-
-# argument parsing
-
-# parser = argparse.ArgumentParser()
-
-# group = parser.add_mutually_exclusive_group(required=False)
-
-# group.add_argument('--vae_path', type=str,
-#                    help='path to your trained discrete VAE')
-
-# group.add_argument('--dalle_path', type=str,
-#                    help='path to your partially trained DALL-E')
-
-# parser.add_argument('--vqgan_model_path', type=str, default = None,
-#                    help='path to your trained VQGAN weights. This should be a .ckpt file. (only valid when taming option is enabled)')
-
-# parser.add_argument('--vqgan_config_path', type=str, default = None,
-#                    help='path to your trained VQGAN config. This should be a .yaml file. (only valid when taming option is enabled)')
-
-# parser.add_argument('--image_text_folder', type=str, required=True,
-#                     help='path to your folder of images and text for learning the DALL-E')
-
-# parser.add_argument('--wds', type = str, default='',
-#                     help = 'Comma separated list of WebDataset (1) image and (2) text column names. Must contain 2 values, e.g. img,cap.')
-
-# parser.add_argument('--truncate_captions', dest='truncate_captions', action='store_true',
-#                     help='Captions passed in which exceed the max token length will be truncated if this is set.')
-
-# parser.add_argument('--random_resize_crop_lower_ratio', dest='resize_ratio', type=float, default=0.75,
-#                     help='Random resized crop lower ratio')
-
-# parser.add_argument('--chinese', dest='chinese', action='store_true')
-
-# parser.add_argument('--taming', dest='taming', action='store_true')
-
-# parser.add_argument('--hug', dest='hug', action='store_true')
-
-# parser.add_argument('--bpe_path', type=str,
-#                     help='path to your BPE json file')
-
-# parser.add_argument('--dalle_output_file_name', type=str, default = "dalle",
-#                     help='output_file_name')
-
-# parser.add_argument('--fp16', action='store_true',
-#                     help='(experimental) - Enable DeepSpeed 16 bit precision. Reduces VRAM.')
-
-
-# parser.add_argument('--amp', action='store_true',
-# 	               help='Apex "O1" automatic mixed precision. More stable than 16 bit precision. Can\'t be used in conjunction with deepspeed zero stages 1-3.')
-
-# parser.add_argument('--wandb_name', default='dalle_train_transformer',
-#                     help='Name W&B will use when saving results.\ne.g. `--wandb_name "coco2017-full-sparse"`')
-
-# parser.add_argument('--wandb_entity', default=None,
-#                     help='(optional) Name of W&B team/entity to log to.')
-
-# parser.add_argument('--stable_softmax', dest='stable_softmax', action='store_true',
-#                     help='Prevent values from becoming too large during softmax. Helps with stability in fp16 and Mixture of Quantization training.')
-
-# parser = distributed_utils.wrap_arg_parser(parser)
-
-# train_group = parser.add_argument_group('Training settings')
-
-# train_group.add_argument('--flops_profiler', dest = 'flops_profiler', action='store_true', help = 'Exits after printing detailed flops/runtime analysis of forward/backward')
-
-# train_group.add_argument('--epochs', default = 20, type = int, help = 'Number of epochs')
-
-# train_group.add_argument('--save_every_n_steps', default = 1000, type = int, help = 'Save a checkpoint every n steps')
-
-# train_group.add_argument('--keep_n_checkpoints', default = None, type = int, help = '(Careful) Deletes old deepspeed checkpoints if there are more than n')
-
-# train_group.add_argument('--batch_size', default = 4, type = int, help = 'Batch size')
-
-# train_group.add_argument('--ga_steps', default = 1, type = int, help = 'Number of steps to accumulate gradients across per each iteration. DeepSpeed only.')
-
-# train_group.add_argument('--learning_rate', default = 3e-4, type = float, help = 'Learning rate')
-
-# train_group.add_argument('--clip_grad_norm', default = 0.5, type = float, help = 'Clip gradient norm')
-
-# train_group.add_argument('--lr_decay', dest = 'lr_decay', action = 'store_true')
-
-# model_group = parser.add_argument_group('Model settings')
-
-# model_group.add_argument('--dim', default = 512, type = int, help = 'Model dimension')
-
-# model_group.add_argument('--text_seq_len', default = 256, type = int, help = 'Text sequence length')
-
-# model_group.add_argument('--depth', default = 2, type = int, help = 'Model depth')
-
-# model_group.add_argument('--heads', default = 8, type = int, help = 'Model number of heads')
-
-# model_group.add_argument('--dim_head', default = 64, type = int, help = 'Model head dimension')
-
-# train_group.add_argument('--ff_dropout', default = 0.0, type = float, help = 'Feed forward dropout.')
-
-# train_group.add_argument('--attn_dropout', default = 0.0, type = float, help = 'Feed forward dropout.')
-
-# model_group.add_argument('--reversible', dest = 'reversible', action='store_true')
-
-# model_group.add_argument('--loss_img_weight', default = 7, type = int, help = 'Image loss weight')
-
-# model_group.add_argument('--attn_types', default = 'full', type = str, help = 'comma separated list of attention types. attention type can be: full or sparse or axial_row or axial_col or conv_like.')
-
-# model_group.add_argument('--shift_tokens', help = 'Use the shift tokens feature', action = 'store_true')
-
-# model_group.add_argument('--rotary_emb', help = 'Use rotary embeddings', action = 'store_true')
-
-# model_group.add_argument('--shared_attn_ids', default = None, type = str, help = 'Comma separated list of shared attention layer ids. Default: sharing is disabled')
-
-# model_group.add_argument('--shared_ff_ids', default = None, type = str, help = 'Comma separated list of shared feed forward layer ids. Default: sharing is disabled')
-
-# model_group.add_argument('--share_input_output_emb', help = 'Share input and output embeddings', action = 'store_true')
-
-# args = parser.parse_args()
-
-# helpers
 
 def exists(val):
     return val is not None
@@ -219,7 +96,8 @@ def main(args: DictConfig):
 
     if not ENABLE_WEBDATASET:
         # quit early if you used the wrong folder name
-        assert Path(args.image_text_folder).exists(), f'The path {args.image_text_folder} was not found.'
+        pass
+        # assert Path(args.image_text_folder).exists(), f'The path {args.image_text_folder} was not found.'
     else:
         # quit early if no tar files were found
         if Path(args.image_text_folder).is_dir():
@@ -476,7 +354,7 @@ def main(args: DictConfig):
     # experiment tracker
 
     if is_root:
-
+        # st()
         model_config = dict(
             depth=DEPTH,
             heads=HEADS,
@@ -487,7 +365,8 @@ def main(args: DictConfig):
             project=args.wandb_name,
             entity=args.wandb_entity,
             resume=False,
-            config=model_config,
+            config=dict(args),
+            mode="disabled" if args.debug else "online"
         )
 
     # distribute
@@ -650,9 +529,12 @@ def main(args: DictConfig):
                 }
 
             if i % SAVE_EVERY_N_STEPS == 0:
-                save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch)
-
-            if i % 100 == 0 and is_root:
+                # st()
+                run_name = wandb.run.name 
+                os.makedirs(f"checkpoints/{run_name}", exist_ok=True)
+                save_model(f"checkpoints/{run_name}/model.pt", epoch=epoch)
+            # st()
+            if i % args.log_images_freq == 0 and is_root:
                 sample_text = text[:1]
                 token_list = sample_text.masked_select(sample_text != 0).tolist()
                 decoded_text = tokenizer.decode(token_list)
