@@ -11,7 +11,7 @@ device: cuda
 
 # mode
 mode: forward_reverse_partial # one of "forward_only", "forward_forward", "forward_reverse_full", "forward_reverse_partial"
-
+use_wandb: True
 wandb_num_images: 4
 
 vae_path: null

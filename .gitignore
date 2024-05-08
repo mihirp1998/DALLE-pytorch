@@ -1,3 +1,6 @@
+pretrained/
+data/
+
 # dall-e generation outputs
 outputs/
 *.pt

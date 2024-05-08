@@ -173,9 +173,9 @@ def main(args: DictConfig):
     # constants
     # st()
     from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, ChineseTokenizer, YttmTokenizer
-    
-    
-    
+
+
+
     WEBDATASET_IMAGE_TEXT_COLUMNS = tuple(args.wds.split(','))
     ENABLE_WEBDATASET = True if len(WEBDATASET_IMAGE_TEXT_COLUMNS) == 2 else False
 
@@ -242,7 +242,7 @@ def main(args: DictConfig):
     # st()
     distr_backend = distributed_utils.set_backend_from_args(args)
     distr_backend.initialize()
-    
+
     using_deepspeed = \
         distributed_utils.using_backend(distributed_utils.DeepSpeedBackend)
 
@@ -488,6 +488,7 @@ def main(args: DictConfig):
             entity=args.wandb_entity,
             resume=False,
             config=model_config,
+            mode="disabled" if not args.use_wandb else "online"
         )
 
     # distribute
