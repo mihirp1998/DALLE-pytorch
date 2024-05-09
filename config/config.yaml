@@ -11,10 +11,13 @@ device: cuda
 
 # mode
 mode: forward_reverse_partial # one of "forward_only", "forward_forward", "forward_reverse_full", "forward_reverse_partial"
+
+
+img2class: True
 use_wandb: True
 wandb_num_images: 4
 
-log_images_freq: 1000
+log_images_freq: 125
 
 vae_path: null
 
@@ -66,11 +69,11 @@ stable_softmax: False
 # help='Prevent values from becoming too large during softmax. Helps with stability in fp16 and Mixture of Quantization training.')
 
 flops_profiler: False
-epochs: 20
+epochs: 50
 save_every_n_steps: 1000
 keep_n_checkpoints: null
 
-batch_size: 4
+batch_size: 20
 
 ga_steps: 1
 # 'Number of steps to accumulate gradients across per each iteration. DeepSpeed only.')

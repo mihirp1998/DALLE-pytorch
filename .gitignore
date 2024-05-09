@@ -1,5 +1,6 @@
 pretrained/
 data/
+logs/
 
 # dall-e generation outputs
 outputs/

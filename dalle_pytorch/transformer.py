@@ -1,6 +1,7 @@
 from functools import partial
 from itertools import islice, cycle
-
+import ipdb
+st = ipdb.set_trace
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
@@ -102,5 +103,5 @@ class Transformer(nn.Module):
 
         self.layers = execute_type(layers, args_route = attn_route_map)
 
-    def forward(self, x, **kwargs):
-        return self.layers(x, **kwargs)
+    def forward(self, x, reverse_model=False,**kwargs):
+        return self.layers(x, reverse_model=reverse_model, **kwargs)

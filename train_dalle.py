@@ -309,6 +309,7 @@ def main(args: DictConfig):
     # data sampler
 
     data_sampler = None
+    total_classes = ds.num_classes
 
     if not is_shuffle:
         data_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -340,7 +341,11 @@ def main(args: DictConfig):
         heads=dalle_params['heads'],
         reversible=dalle_params['reversible'],
         attn_types=attn_types,
+        num_classes=total_classes,
     ).cuda()
+
+
+
 
 
     if not using_deepspeed:
@@ -350,7 +355,7 @@ def main(args: DictConfig):
 
     if RESUME and not using_deepspeed:
         print(f'loading DALLE model from {DALLE_PATH}')
-        dalle.load_state_dict(weights)
+        dalle.load_state_dict(weights, strict=False) # because of classification head
 
     # optimizer
 
@@ -381,17 +386,21 @@ def main(args: DictConfig):
 
     if is_root:
         # st()
+        params = sum(p.numel() for p in dalle.parameters()) / 1_000_000
+        print(f'Initialized DALL-E model with {params:.2f}M parameters')
         model_config = dict(
             depth=DEPTH,
             heads=HEADS,
             dim_head=DIM_HEAD
         )
+        config_dict = dict(args)
+        config_dict['num_params'] = params
 
         run = wandb.init(
             project=args.wandb_name,
             entity=args.wandb_entity,
             resume=False,
-            config=dict(args),
+            config=config_dict,
             mode="disabled" if args.debug else "online"
         )
 
@@ -518,7 +527,7 @@ def main(args: DictConfig):
         if data_sampler:
             data_sampler.set_epoch(epoch)
 
-        for i, (text, images) in enumerate((dl if ENABLE_WEBDATASET else distr_dl)):
+        for i, (text, images, class_idx) in enumerate((dl if ENABLE_WEBDATASET else distr_dl)):
             # st()
             if i % 10 == 0 and is_root:
                 t = time.time()
@@ -526,9 +535,23 @@ def main(args: DictConfig):
             if args.fp16:
                 images = images.half()
 
-            text, images = map(lambda t: t.cuda(), (text, images))
+            text, images, class_idx = map(lambda t: t.cuda(), (text, images, class_idx))
+            log = {}
 
-            loss = distr_dalle(text, images, return_loss=True)
+            if args.img2class:
+                # classfn acc
+                loss, accuracy = distr_dalle(text, images,
+                               return_loss=True,
+                               img2cls_target = class_idx if args.img2class else None,
+                               reverse_model = True if args.mode == 'forward_reverse_partial' else False
+                               )
+                log['accuracy'] = accuracy
+            else:
+                loss = distr_dalle(text, images,
+                                return_loss=True,
+                                img2cls_target = class_idx if args.img2class else None,
+                                reverse_model = True if args.mode == 'forward_reverse_partial' else False
+                               )
 
             if using_deepspeed:
                 distr_dalle.backward(loss)
@@ -543,7 +566,6 @@ def main(args: DictConfig):
             # Collective loss, averaged
             avg_loss = distr_backend.average_all(loss)
 
-            log = {}
 
             if i % 10 == 0 and is_root:
                 print(epoch, i, f'loss - {avg_loss.item()}')
@@ -589,9 +611,9 @@ def main(args: DictConfig):
 
         save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch)
 
-        if is_root:
+        # if is_root:
             # save trained model to wandb as an artifact every epoch's end
-            save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
+            # save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
 
     save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch)
 

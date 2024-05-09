@@ -131,14 +131,20 @@ class SequentialSequence(nn.Module):
         self.args_route = args_route
         self.layer_dropout = layer_dropout
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, reverse_model=False,**kwargs):
         args = route_args(self.args_route, kwargs, len(self.layers))
         layers_and_args = list(zip(self.layers, args))
 
-        for (f, g), (f_args, g_args) in layers_and_args:
-            x = x + f(x, **f_args)
-            x = x + g(x, **g_args)
+        if not reverse_model:
+            for (f, g), (f_args, g_args) in layers_and_args:
+                x = x + f(x, **f_args)
+                x = x + g(x, **g_args)
+        else:
+            for (f, g), (f_args, g_args) in layers_and_args[::-1]:
+                x = x + g(x, **g_args)
+                x = x + f(x, **f_args)
         return x
+
 
 class ReversibleSequence(nn.Module):
     def __init__(self, blocks, args_route = {}):

@@ -303,7 +303,8 @@ class DALLE(nn.Module):
         ff_dropout = 0,
         sparse_attn = False,
         attn_types = None,
-        loss_img_weight = 7
+        loss_img_weight = 7,
+        num_classes = None
     ):
         super().__init__()
         assert isinstance(vae, (DiscreteVAE, OpenAIDiscreteVAE, VQGanVAE1024)), 'vae must be an instance of DiscreteVAE'
@@ -365,6 +366,11 @@ class DALLE(nn.Module):
 
         self.register_buffer('logits_mask', logits_mask)
         self.loss_img_weight = loss_img_weight
+        if num_classes is not None:
+            self.num_classes = num_classes
+            # self.class_emb = nn.Embedding(num_classes, dim)
+            self.cls_embed = nn.Linear(1, dim)
+            self.class_head = nn.Linear(dim, num_classes)
 
     @torch.no_grad()
     @eval_decorator
@@ -430,7 +436,9 @@ class DALLE(nn.Module):
         text,
         image = None,
         mask = None,
-        return_loss = False
+        return_loss = False,
+        img2cls_target = None,
+        reverse_model = False
     ):
         assert text.shape[-1] == self.text_seq_len, f'the length {text.shape[-1]} of the text tokens you passed in does not have the correct length ({self.text_seq_len})'
         device, total_seq_len = text.device, self.total_seq_len
@@ -458,8 +466,20 @@ class DALLE(nn.Module):
             image_emb = self.image_emb(image)
 
             image_emb += self.image_pos_emb(image_emb)
+            if img2cls_target is None:
+                # text to image
+                tokens = torch.cat((tokens, image_emb), dim = 1) # (b, nt + ni, d)
+            else:
+                # image to text
+                # convert class index to embedding
+                # class_emb = self.class_emb(img2cls_target) # (b, d)
+                # class_emb = class_emb.unsqueeze(1)
 
-            tokens = torch.cat((tokens, image_emb), dim = 1)
+                # cls_token is 1
+                # create (b, ) tensor filled with 1
+                cls_token = torch.ones(text.shape[0], 1).to(device)
+                cls_embed = self.cls_embed(torch.tensor(cls_token)).unsqueeze(1) # (b, 1, d)
+                tokens = torch.cat((image_emb, cls_embed), dim = 1) # (b, ni+1, d)
 
             seq_len += image_len
             if exists(mask):
@@ -473,8 +493,17 @@ class DALLE(nn.Module):
 
             if exists(mask):
                 mask = mask[:, :-1]
-        st()
-        out = self.transformer(tokens, mask = mask)
+        out = self.transformer(tokens, mask = mask, reverse_model=reverse_model)
+
+        if img2cls_target is not None:
+            # image to text, get the last token
+            out = out[:, -1:].squeeze(1)
+            out = self.class_head(out)
+            accuracy = (out.argmax(dim=-1) == img2cls_target).float().mean()
+            loss = F.cross_entropy(out, img2cls_target)
+            return loss, accuracy
+
+
         logits = self.to_logits(out)
 
         # mask logits to make sure text predicts text (except last token), and image predicts image

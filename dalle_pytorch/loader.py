@@ -37,6 +37,12 @@ class TextImageDataset(Dataset):
             self.dataset_name = "cub200"
             self.sot_token = self.tokenizer.encode("<|startoftext|>").ids[0]
             self.eot_token = self.tokenizer.encode("<|endoftext|>").ids[0]
+            # classes is stored in ~/vision_datasets/CUB_200_2011/classes.txt as id, class_name
+            # class2idx is a dictionary with class_name as key
+            with open("/home/mprabhud/vision_datasets/CUB_200_2011/classes.txt") as f:
+                self.class2idx = {line.strip().split()[1]:int(line.strip().split()[0])-1 for line in f}
+
+            self.num_classes = len(self.class2idx)
 
         else:
             path = Path(folder)
@@ -106,7 +112,10 @@ class TextImageDataset(Dataset):
     def __getitem__(self, ind):
         if self.dataset_name == "cub200":
             image, target, filename = self.dataset[ind]
-            description = filename.split("/")[0].split(".")[1].replace("_"," ")
+            class_name = filename.split("/")[0]
+            description = class_name.split(".")[1].replace("_"," ")
+
+            class_idx = self.class2idx[class_name]
             # convert to lowercase
             description = description.lower()
             image_tensor = self.image_transform(image)
@@ -123,6 +132,7 @@ class TextImageDataset(Dataset):
         else:
             description = self.class_names[ind]
             image_file = self.image_files[ind]
+            class_idx = -1 # dummy value
 
             tokenized_text = self.tokenizer.tokenize(
                 description,
@@ -137,4 +147,4 @@ class TextImageDataset(Dataset):
                 return self.skip_sample(ind)
 
         # Success
-        return tokenized_text, image_tensor
+        return tokenized_text, image_tensor, class_idx
