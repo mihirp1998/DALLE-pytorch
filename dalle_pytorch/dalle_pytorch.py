@@ -370,6 +370,12 @@ class DALLE(nn.Module):
             self.num_classes = num_classes
             # self.class_emb = nn.Embedding(num_classes, dim)
             self.cls_embed = nn.Linear(1, dim)
+            # initialize the weights to the average of all self.text_emb weights
+            avg_text_emd = self.text_emb.weight.mean(dim=0).unsqueeze(0).T # (d, 1)
+            self.cls_embed.weight.data = avg_text_emd
+            self.cls_pos_embed = nn.Linear(1, dim)
+            avg_pos_embed = self.text_pos_emb.weight.mean(dim=0).unsqueeze(0).T # (d, 1)
+            self.cls_pos_embed.weight.data = avg_pos_embed
             self.class_head = nn.Linear(dim, num_classes)
 
     @torch.no_grad()
@@ -477,8 +483,13 @@ class DALLE(nn.Module):
 
                 # cls_token is 1
                 # create (b, ) tensor filled with 1
-                cls_token = torch.ones(text.shape[0], 1).to(device)
-                cls_embed = self.cls_embed(torch.tensor(cls_token)).unsqueeze(1) # (b, 1, d)
+                B = text.shape[0]
+                cls_token = torch.ones(B, 1).to(device)
+                cls_pos = torch.full((B,1), image_len+1, dtype=torch.float32).to(device)
+                # fill cls_pos with image_len + 1 of shape (b, )
+                cls_embed = self.cls_embed(cls_token).unsqueeze(1) # (b, 1, d)
+                # add position embedding of len(image_emb) + 1
+                cls_embed += self.cls_pos_embed(cls_pos).unsqueeze(1) # (1, ni+1, d)
                 tokens = torch.cat((image_emb, cls_embed), dim = 1) # (b, ni+1, d)
 
             seq_len += image_len

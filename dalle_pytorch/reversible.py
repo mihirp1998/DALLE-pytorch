@@ -141,8 +141,8 @@ class SequentialSequence(nn.Module):
                 x = x + g(x, **g_args)
         else:
             for (f, g), (f_args, g_args) in layers_and_args[::-1]:
-                x = x + g(x, **g_args)
                 x = x + f(x, **f_args)
+                x = x + g(x, **g_args)
         return x
 
 
