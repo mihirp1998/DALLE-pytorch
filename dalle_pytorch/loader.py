@@ -1,7 +1,7 @@
 from pathlib import Path
 import torchvision
 from random import randint, choice
-
+import torch
 import ipdb
 st = ipdb.set_trace
 import json
@@ -30,12 +30,14 @@ class TextImageDataset(Dataset):
         """
         super().__init__()
         self.shuffle = shuffle
-        
-        
+        self.tokenizer = tokenizer
+
         if folder == "cub200":
             self.dataset = Cub2011(root="/home/mprabhud/vision_datasets", download=True)
             self.dataset_name = "cub200"
-            
+            self.sot_token = self.tokenizer.encode("<|startoftext|>").ids[0]
+            self.eot_token = self.tokenizer.encode("<|endoftext|>").ids[0]
+
         else:
             path = Path(folder)
             image_files = [
@@ -45,7 +47,7 @@ class TextImageDataset(Dataset):
 
 
             imagenet_json = json.load(open("dalle_pytorch/imagenet.json")),
-            imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}        
+            imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}
             folder_names = [str(image_file).split("/")[-2] for image_file in image_files]
             class_names = [imagenet_folder_name[folder_name] for folder_name in folder_names]
             self.class_names= [class_name.replace("_"," ") for class_name in class_names]
@@ -53,11 +55,11 @@ class TextImageDataset(Dataset):
             self.image_files = image_files
 
         # self.dataset = torchvision.datasets.CIFAR10(root="/home/mprabhud/vision_datasets", download=True)
-        
-        
-        
+
+
+
         # text_files = [*path.glob('**/*.txt')]
-        
+
 
         # text_files = {text_file.stem: text_file for text_file in text_files}
         # image_files = {image_file.stem: image_file for image_file in image_files}
@@ -70,7 +72,6 @@ class TextImageDataset(Dataset):
         self.text_len = text_len
         self.truncate_captions = truncate_captions
         self.resize_ratio = resize_ratio
-        self.tokenizer = tokenizer
 
         image_mode = 'RGBA' if transparent else 'RGB'
 
@@ -105,14 +106,20 @@ class TextImageDataset(Dataset):
     def __getitem__(self, ind):
         if self.dataset_name == "cub200":
             image, target, filename = self.dataset[ind]
-            # st()
             description = filename.split("/")[0].split(".")[1].replace("_"," ")
+            # convert to lowercase
+            description = description.lower()
             image_tensor = self.image_transform(image)
-            tokenized_text = self.tokenizer.tokenize(
-                description,
-                self.text_len,
-                truncate_text=self.truncate_captions
-            ).squeeze(0)            
+            codes = [0] * self.text_len
+            text_token = self.tokenizer.encode(description).ids
+            tokens = [self.sot_token] + text_token + [self.eot_token]
+            codes[:len(tokens)] = tokens
+            tokenized_text = torch.LongTensor(codes).cuda()
+            # tokenized_text = self.tokenizer.tokenize(
+            #     description,
+            #     self.text_len,
+            #     truncate_text=self.truncate_captions
+            # ).squeeze(0)
         else:
             description = self.class_names[ind]
             image_file = self.image_files[ind]

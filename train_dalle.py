@@ -16,8 +16,8 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
-from dalle_pytorch import __version__
-from dalle_pytorch import OpenAIDiscreteVAE, VQGanVAE, DiscreteVAE, DALLE
+# from dalle_pytorch import __version__
+from dalle_pytorch import OpenAIDiscreteVAE, VQGanVAE1024, DiscreteVAE, DALLE
 from dalle_pytorch import distributed_utils
 from dalle_pytorch.loader import TextImageDataset
 # libraries needed for webdataset support
@@ -25,6 +25,7 @@ import webdataset as wds
 from torchvision import transforms as T
 from PIL import Image
 from io import BytesIO
+from tokenizers import Tokenizer
 
 def exists(val):
     return val is not None
@@ -49,9 +50,9 @@ def cp_path_to_dir(cp_path, tag):
 def main(args: DictConfig):
     # constants
     # st()
-    from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, ChineseTokenizer, YttmTokenizer
+    # from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, ChineseTokenizer, YttmTokenizer
 
-
+    print(args)
 
     WEBDATASET_IMAGE_TEXT_COLUMNS = tuple(args.wds.split(','))
     ENABLE_WEBDATASET = True if len(WEBDATASET_IMAGE_TEXT_COLUMNS) == 2 else False
@@ -129,13 +130,16 @@ def main(args: DictConfig):
     # tokenizer
 
     if exists(args.bpe_path):
-        klass = HugTokenizer if args.hug else YttmTokenizer
-        tokenizer = klass(args.bpe_path)
-    elif args.chinese:
-        tokenizer = ChineseTokenizer()
+        # klass = HugTokenizer if args.hug else YttmTokenizer
+        # tokenizer = klass(args.bpe_path)
+        tokenizer = Tokenizer.from_file(args.bpe_path)
+    # elif args.chinese:
+    #     tokenizer = ChineseTokenizer()
+    assert exists(args.bpe_path), 'bpe file does not exist'
 
     # reconstitute vae
 
+    vae_dict = {"args": {"image_size": 256, "emb_dim": 256}} # not sure if this is general
     if RESUME:
         dalle_path = Path(DALLE_PATH)
         if using_deepspeed:
@@ -147,14 +151,16 @@ def main(args: DictConfig):
             assert dalle_path.exists(), 'DALL-E model file does not exist'
         loaded_obj = torch.load(str(dalle_path), map_location='cpu')
 
-        dalle_params, vae_params, weights = loaded_obj['hparams'], loaded_obj['vae_params'], loaded_obj['weights']
-        opt_state = loaded_obj.get('opt_state')
-        scheduler_state = loaded_obj.get('scheduler_state')
+        dalle_params, vae_params, weights = loaded_obj['args'], loaded_obj['vae'], loaded_obj['dalle']
+        opt_state = loaded_obj.get('optimizer')
+        # scheduler_state = loaded_obj.get('global_step')
+        scheduler_state = None # does not exist in checkpoint
         # st()
-        if vae_params is not None:
-            vae = DiscreteVAE(**vae_params)
-        elif args.taming:
-            vae = VQGanVAE(VQGAN_MODEL_PATH, VQGAN_CONFIG_PATH)
+        # if vae_params is not None:
+        #     vae = DiscreteVAE(**vae_params)
+        if args.taming:
+            # vae = VQGanVAE1024(VQGAN_MODEL_PATH, VQGAN_CONFIG_PATH)
+            vae = VQGanVAE1024()
         else:
             vae = OpenAIDiscreteVAE()
 
@@ -181,7 +187,8 @@ def main(args: DictConfig):
             vae_params = None
 
             if args.taming:
-                vae = VQGanVAE(VQGAN_MODEL_PATH, VQGAN_CONFIG_PATH)
+                # vae = VQGanVAE1024(VQGAN_MODEL_PATH, VQGAN_CONFIG_PATH)
+                vae = VQGanVAE1024()
             else:
                 vae = OpenAIDiscreteVAE()
 
@@ -205,11 +212,17 @@ def main(args: DictConfig):
             share_input_output_emb=SHARE_INPUT_OUTPUT_EMB,
         )
         resume_epoch = 0
-
+    attn_types = []
+    for type in dalle_params['attn_types'].split(","):
+        assert type in ("full", "sparse", "axial_row", "axial_col", "conv_like")
+        attn_types.append(type)
+    attn_types = tuple(attn_types)
+    print("[Log] Attention types: ", attn_types)
     IMAGE_SIZE = vae.image_size
-    CHANNELS = vae.channels
-    TRANSPARENT = CHANNELS == 4
-    IMAGE_MODE = 'RGBA' if CHANNELS == 4 else 'RGB'
+    # CHANNELS = vae.channels
+    # TRANSPARENT = CHANNELS == 4
+    # IMAGE_MODE = 'RGBA' if CHANNELS == 4 else 'RGB'
+    IMAGE_MODE = 'RGB'
 
     # configure OpenAI VAE for float16s
 
@@ -279,9 +292,9 @@ def main(args: DictConfig):
     else:
         ds = TextImageDataset(
             args.image_text_folder,
-            text_len=TEXT_SEQ_LEN,
+            text_len=TEXT_SEQ_LEN if not RESUME else dalle_params['text_seq_len'],
             image_size=IMAGE_SIZE,
-            transparent=TRANSPARENT,
+            # transparent=TRANSPARENT,
             resize_ratio=args.resize_ratio,
             truncate_captions=args.truncate_captions,
             tokenizer=tokenizer,
@@ -314,10 +327,21 @@ def main(args: DictConfig):
     else:
         # Regular DataLoader for image-text-folder datasets
         dl = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=is_shuffle, drop_last=True, sampler=data_sampler)
-
+    # st()
     # initialize DALL-E
 
-    dalle = DALLE(vae=vae, **dalle_params)
+    # dalle = DALLE(vae=vae, **dalle_params)
+    dalle = DALLE(
+        dim=vae_dict['args']['emb_dim'],
+        vae=vae,
+        num_text_tokens=dalle_params['num_text_tokens'],
+        text_seq_len=dalle_params['text_seq_len'],
+        depth=dalle_params['depth'],
+        heads=dalle_params['heads'],
+        reversible=dalle_params['reversible'],
+        attn_types=attn_types,
+    ).cuda()
+
 
     if not using_deepspeed:
         if args.fp16:
@@ -325,14 +349,16 @@ def main(args: DictConfig):
         dalle = dalle.cuda()
 
     if RESUME and not using_deepspeed:
+        print(f'loading DALLE model from {DALLE_PATH}')
         dalle.load_state_dict(weights)
 
     # optimizer
 
     opt = Adam(get_trainable_params(dalle), lr=LEARNING_RATE)
-
-    if RESUME and opt_state:
-        opt.load_state_dict(opt_state)
+    # st()
+    # if RESUME and opt_state:
+    #     # todo - figure out why this doesn't work
+    #     opt.load_state_dict(opt_state)
 
     # scheduler
 
@@ -431,7 +457,7 @@ def main(args: DictConfig):
             'hparams': dalle_params,
             'vae_params': vae_params,
             'epoch': epoch,
-            'version': __version__,
+            # 'version': __version__,
             'vae_class_name': vae.__class__.__name__
         }
 
@@ -486,8 +512,9 @@ def main(args: DictConfig):
     # See https://github.com/lucidrains/DALLE-pytorch/wiki/DeepSpeed-Checkpoints
 
     save_model(DALLE_OUTPUT_FILE_NAME, epoch=resume_epoch)
-
-    for epoch in range(resume_epoch, EPOCHS):
+    # st()
+    print(f'Length of dataloader: {len(dl)}')
+    for epoch in range(resume_epoch, resume_epoch+EPOCHS):
         if data_sampler:
             data_sampler.set_epoch(epoch)
 

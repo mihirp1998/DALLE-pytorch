@@ -18,7 +18,7 @@ log_images_freq: 1000
 
 vae_path: null
 
-dalle_path: null
+dalle_path: pretrained/cub200_adam_frcc.pth
 
 vqgan_model_path: null
 # help='path to your trained VQGAN weights. This should be a .ckpt file. (only valid when taming option is enabled)')
@@ -26,7 +26,7 @@ vqgan_model_path: null
 vqgan_config_path: null
 # help='path to your trained VQGAN config. This should be a .yaml file. (only valid when taming option is enabled)')
 
-image_text_folder: null
+image_text_folder: cub200
 # help='path to your folder of images and text for learning the DALL-E')
 
 wds: ''
@@ -39,9 +39,9 @@ resize_ratio: 0.75
 # help='Random resized crop lower ratio')
 
 chinese: False
-taming: False
+taming: True
 hug: False
-bpe_path: null
+bpe_path: /home/mprabhud/sp/DALLE-pytorch/pretrained/cub200_bpe_vsize_7800.json
 # help='path to your BPE json file')
 
 dalle_output_file_name: dalle

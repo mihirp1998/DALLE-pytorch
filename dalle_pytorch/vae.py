@@ -20,6 +20,9 @@ import torch.nn.functional as F
 
 from einops import rearrange
 
+# import ipdb
+# st = ipdb.set_trace
+
 # constants
 
 CACHE_PATH = os.path.expanduser("~/.cache/dalle")
@@ -137,7 +140,9 @@ class VQGanVAE1024(nn.Module):
         b = img.shape[0]
         img = (2 * img) - 1
         _, _, [_, _, indices] = self.model.encode(img)
-        return rearrange(indices, '(b n) () -> b n', b = b)
+        # st()
+        # return rearrange(indices, '(b n) () -> b n', b = b)
+        return rearrange(indices, '(b n) -> b n', b = b)
 
     def decode(self, img_seq):
         b, n = img_seq.shape

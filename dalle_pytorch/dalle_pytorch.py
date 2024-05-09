@@ -9,7 +9,8 @@ from einops import rearrange
 from dalle_pytorch.vae import OpenAIDiscreteVAE
 from dalle_pytorch.vae import VQGanVAE1024
 from dalle_pytorch.transformer import Transformer
-
+import ipdb
+st = ipdb.set_trace
 # helpers
 
 def exists(val):
@@ -384,6 +385,7 @@ class DALLE(nn.Module):
         text = text[:, :text_seq_len] # make sure text is within bounds
         out = text
 
+
         if exists(img):
             image_size = vae.image_size
             assert img.shape[1] == 3 and img.shape[2] == image_size and img.shape[3] == image_size, f'input image must have the correct image size {image_size}'
@@ -471,7 +473,7 @@ class DALLE(nn.Module):
 
             if exists(mask):
                 mask = mask[:, :-1]
-
+        st()
         out = self.transformer(tokens, mask = mask)
         logits = self.to_logits(out)
 

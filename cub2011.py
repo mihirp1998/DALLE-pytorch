@@ -13,7 +13,7 @@ class Cub2011(Dataset):
     filename = 'CUB_200_2011.tgz'
     tgz_md5 = '97eceeb196236b17998738112f37df78'
 
-    def __init__(self, root, train=True, transform=None, loader=default_loader, download=True):
+    def __init__(self, root, train=True, transform=None, loader=default_loader, download=False):
         self.root = os.path.expanduser(root)
         self.transform = transform
         self.loader = default_loader
