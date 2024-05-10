@@ -4,6 +4,9 @@ from operator import itemgetter
 from torch.autograd.function import Function
 from torch.utils.checkpoint import get_device_states, set_device_states
 
+import ipdb
+st = ipdb.set_trace
+
 # for routing arguments into the functions of the reversible layer
 def route_args(router, args, depth):
     routed_args = [(dict(), dict()) for _ in range(depth)]
@@ -131,13 +134,18 @@ class SequentialSequence(nn.Module):
         self.args_route = args_route
         self.layer_dropout = layer_dropout
 
-    def forward(self, x, **kwargs):
+    def forward(self, x, reverse_model=False, **kwargs):
         args = route_args(self.args_route, kwargs, len(self.layers))
         layers_and_args = list(zip(self.layers, args))
-
-        for (f, g), (f_args, g_args) in layers_and_args:
-            x = x + f(x, **f_args)
-            x = x + g(x, **g_args)
+        # st()
+        if reverse_model:
+            for (f, g), (f_args, g_args) in layers_and_args[::-1]:
+                x = x + f(x, **f_args)
+                x = x + g(x, **g_args)            
+        else:
+            for (f, g), (f_args, g_args) in layers_and_args:
+                x = x + f(x, **f_args)
+                x = x + g(x, **g_args)
         return x
 
 class ReversibleSequence(nn.Module):

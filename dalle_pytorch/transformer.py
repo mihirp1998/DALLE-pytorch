@@ -2,6 +2,8 @@ from collections import deque
 from collections.abc import Iterable
 from functools import partial
 from itertools import islice, cycle
+import ipdb
+st = ipdb.set_trace
 
 import torch
 from torch import nn, einsum
@@ -327,8 +329,9 @@ class Transformer(nn.Module):
 
         self.register_buffer('pos_emb', pos_emb)
 
-    def forward(self, x, **kwargs):
-        return self.layers(x, rotary_pos_emb = self.pos_emb, **kwargs)
+    def forward(self, x, reverse_model=False, **kwargs):
+        # st()
+        return self.layers(x,reverse_model=reverse_model, rotary_pos_emb = self.pos_emb, **kwargs)
 
     def _get_attention_mask(self, attn_type):
         img_seq_len = self.image_fmap_size ** 2

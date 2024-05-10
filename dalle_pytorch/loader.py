@@ -35,15 +35,16 @@ class TextImageDataset(Dataset):
         if folder == "cub200":
             self.dataset = Cub2011(root="/home/mprabhud/vision_datasets", download=True)
             self.dataset_name = "cub200"
-            
+        elif folder == "mnist":
+            self.dataset = torchvision.datasets.MNIST(root="/home/mprabhud/vision_datasets", download=True)
+            self.dataset_name = "mnist"
+            # st()
         else:
             path = Path(folder)
             image_files = [
                 *path.glob('**/*.png'), *path.glob('**/*.jpg'),
                 *path.glob('**/*.jpeg'), *path.glob('**/*.bmp'),*path.glob('**/*.JPEG')
             ]
-
-
             imagenet_json = json.load(open("dalle_pytorch/imagenet.json")),
             imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}        
             folder_names = [str(image_file).split("/")[-2] for image_file in image_files]
@@ -51,19 +52,11 @@ class TextImageDataset(Dataset):
             self.class_names= [class_name.replace("_"," ") for class_name in class_names]
             # self.class_names= [f"a photo of a {class_name}" for class_name in self.class_names]
             self.image_files = image_files
-
         # self.dataset = torchvision.datasets.CIFAR10(root="/home/mprabhud/vision_datasets", download=True)
-        
-        
-        
         # text_files = [*path.glob('**/*.txt')]
-        
-
         # text_files = {text_file.stem: text_file for text_file in text_files}
         # image_files = {image_file.stem: image_file for image_file in image_files}
-
         # keys = (image_files.keys() & text_files.keys())
-
         # self.keys = list(keys)
         # self.text_files = {k: v for k, v in text_files.items() if k in keys}
         # self.image_files = {k: v for k, v in image_files.items() if k in keys}
@@ -85,6 +78,8 @@ class TextImageDataset(Dataset):
 
     def __len__(self):
         if self.dataset_name == "cub200":
+            return len(self.dataset)
+        elif self.dataset_name == "mnist":
             return len(self.dataset)
         else:
             return len(self.image_files)
@@ -113,6 +108,17 @@ class TextImageDataset(Dataset):
                 self.text_len,
                 truncate_text=self.truncate_captions
             ).squeeze(0)            
+        elif self.dataset_name == "mnist":
+            image, target = self.dataset[ind]
+            description = self.dataset.classes[target]
+            image_tensor = self.image_transform(image)
+            tokenized_text = self.tokenizer.tokenize(
+                description,
+                self.text_len,
+                truncate_text=self.truncate_captions
+            ).squeeze(0)            
+            # Image.fromarray((image_tensor * 255).to(torch.uint8).permute(1,2,0).numpy()).save("out.png")
+            # st()
         else:
             description = self.class_names[ind]
             image_file = self.image_files[ind]

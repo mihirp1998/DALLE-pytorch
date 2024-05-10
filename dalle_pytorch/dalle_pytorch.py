@@ -1,5 +1,7 @@
 from math import log2, sqrt
 import torch
+import ipdb
+st = ipdb.set_trace
 from torch import nn, einsum
 import torch.nn.functional as F
 import numpy as np
@@ -366,6 +368,7 @@ class DALLE(nn.Module):
         sparse_attn = False,
         attn_types = None,
         loss_img_weight = 7,
+        args = None,
         stable = False,
         sandwich_norm = False,
         shift_tokens = True,
@@ -390,6 +393,9 @@ class DALLE(nn.Module):
 
         self.num_text_tokens = num_text_tokens # for offsetting logits index and calculating cross entropy loss
         self.num_image_tokens = num_image_tokens
+        self.args = args
+        
+        # st()
 
         self.text_seq_len = text_seq_len
         self.image_seq_len = image_seq_len
@@ -453,6 +459,11 @@ class DALLE(nn.Module):
         )
 
         self.register_buffer('logits_mask', logits_mask, persistent=False)
+        # st()
+        logits_mask_inv = torch.cat([self.logits_mask[:, text_seq_len:], self.logits_mask[:, :text_seq_len]], dim=1)
+        self.register_buffer('logits_mask_inv', logits_mask_inv, persistent=False)
+        # self.logits_mask_inv.to(self.logits_mask.device)
+        # st()
         self.loss_img_weight = loss_img_weight
 
 
@@ -578,6 +589,8 @@ class DALLE(nn.Module):
         text,
         image = None,
         return_loss = False,
+        inverse_mapping=False,
+        reverse_model= False,
         null_cond_prob = 0.,
         cache = None,
     ):
@@ -594,9 +607,8 @@ class DALLE(nn.Module):
 
         text_range = torch.arange(self.text_seq_len, device = device) + (self.num_text_tokens - self.text_seq_len)
         text = torch.where(text == 0, text_range, text)
-
-        # add <bos>
-
+        # add <bos>        
+        # st()
         text = F.pad(text, (1, 0), value = 0)
 
         tokens = self.text_emb(text)
@@ -618,8 +630,11 @@ class DALLE(nn.Module):
             image_emb = self.image_emb(image)
 
             image_emb += self.image_pos_emb(image_emb)
-
-            tokens = torch.cat((tokens, image_emb), dim = 1)
+            # st()
+            if inverse_mapping:
+                tokens = torch.cat((image_emb, tokens), dim = 1)
+            else:
+                tokens = torch.cat((tokens, image_emb), dim = 1)
 
             seq_len += image_len
 
@@ -636,18 +651,26 @@ class DALLE(nn.Module):
 
         if exists(cache) and cache.get('offset'):
             tokens = tokens[:, -1:]
-        out = self.transformer(tokens, cache=cache)
+        # st()
+        out = self.transformer(tokens, cache=cache, reverse_model=reverse_model)
 
         if self.stable:
             out = self.norm_by_max(out)
-
+        # st()
         logits = self.to_logits(out)
 
         # mask logits to make sure text predicts text (except last token), and image predicts image
-
-        logits_mask = self.logits_mask[:, :seq_len]
+        # st()
+        if inverse_mapping:
+            logits_mask = self.logits_mask_inv[:, :seq_len]
+        else:
+            logits_mask = self.logits_mask[:, :seq_len]
+        
         if exists(cache) and cache.get('offset'):
+            assert False
             logits_mask = logits_mask[:, -1:]
+        
+        # st()
         max_neg_value = -torch.finfo(logits.dtype).max
         logits.masked_fill_(logits_mask, max_neg_value)
 
@@ -660,12 +683,25 @@ class DALLE(nn.Module):
         assert exists(image), 'when training, image must be supplied'
 
         offsetted_image = image + self.num_text_tokens
-        labels = torch.cat((text[:, 1:], offsetted_image), dim = 1)
-
+        if inverse_mapping:
+            labels = torch.cat((offsetted_image[:,1:],text), dim = 1)
+        else:
+            labels = torch.cat((text[:, 1:], offsetted_image), dim = 1)
+        
         logits = rearrange(logits, 'b n c -> b c n')
-
-        loss_text = F.cross_entropy(logits[:, :, :self.text_seq_len], labels[:, :self.text_seq_len])
-        loss_img = F.cross_entropy(logits[:, :, self.text_seq_len:], labels[:, self.text_seq_len:])
-
-        loss = (loss_text + self.loss_img_weight * loss_img) / (self.loss_img_weight + 1)
-        return loss
+        
+        if inverse_mapping:
+            # st()
+            loss_text = F.cross_entropy(logits[:, :, self.text_seq_len:], labels[:, self.text_seq_len:])
+            loss_img = F.cross_entropy(logits[:, :, :self.text_seq_len-1], labels[:, :self.text_seq_len-1])
+            correct_bool = logits[:, :, self.text_seq_len:][:,:,:3].argmax(1) == labels[:, self.text_seq_len:][:,:3]
+            # st()
+            accuracy = correct_bool.all(-1).float().mean()
+            loss = (self.args.text_loss_coeff_inv * loss_text + self.args.img_loss_coeff_inv * loss_img) / (self.args.img_loss_coeff_inv + self.args.text_loss_coeff_inv)
+            # st()
+        else:
+            loss_text = F.cross_entropy(logits[:, :, :self.text_seq_len], labels[:, :self.text_seq_len])
+            loss_img = F.cross_entropy(logits[:, :, self.text_seq_len:], labels[:, self.text_seq_len:])
+            loss = (self.args.text_loss_coeff * loss_text + self.args.img_loss_coeff * loss_img) / (self.args.img_loss_coeff + self.args.text_loss_coeff)
+            accuracy= None
+        return loss,accuracy

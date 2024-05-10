@@ -317,7 +317,10 @@ def main(args: DictConfig):
 
     # initialize DALL-E
 
-    dalle = DALLE(vae=vae, **dalle_params)
+    dalle = DALLE(vae=vae, args=args, **dalle_params)
+    num_params = sum([param.numel() for param in dalle.parameters() if param.requires_grad])
+    args.num_params = num_params
+    # st()
 
     if not using_deepspeed:
         if args.fp16:
@@ -486,6 +489,7 @@ def main(args: DictConfig):
     # See https://github.com/lucidrains/DALLE-pytorch/wiki/DeepSpeed-Checkpoints
 
     save_model(DALLE_OUTPUT_FILE_NAME, epoch=resume_epoch)
+    global_steps = 0
 
     for epoch in range(resume_epoch, EPOCHS):
         if data_sampler:
@@ -493,6 +497,7 @@ def main(args: DictConfig):
 
         for i, (text, images) in enumerate((dl if ENABLE_WEBDATASET else distr_dl)):
             # st()
+            global_steps += 1
             if i % 10 == 0 and is_root:
                 t = time.time()
 
@@ -500,8 +505,17 @@ def main(args: DictConfig):
                 images = images.half()
 
             text, images = map(lambda t: t.cuda(), (text, images))
-
-            loss = distr_dalle(text, images, return_loss=True)
+            
+            loss,_ = distr_dalle(text, images, return_loss=True)
+            # st()
+            forward_loss = loss.clone()
+            
+            if args.mode == "forward_forward":
+                inverse_loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True)    
+                loss += inverse_loss
+            elif args.mode == "forward_reverse_partial":
+                inverse_loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True, reverse_model=True)
+                loss += inverse_loss
 
             if using_deepspeed:
                 distr_dalle.backward(loss)
@@ -515,9 +529,17 @@ def main(args: DictConfig):
 
             # Collective loss, averaged
             avg_loss = distr_backend.average_all(loss)
+            avg_accuracy = distr_backend.average_all(accuracy)
+            avg_forward_loss = distr_backend.average_all(forward_loss)
+            # st()
+            
+            if args.mode == "forward_forward" or args.mode == "forward_reverse_partial":
+                avg_inverse_loss = distr_backend.average_all(inverse_loss)
+            else:
+                avg_inverse_loss =  0.0
 
             log = {}
-
+            # st()
             if i % 10 == 0 and is_root:
                 print(epoch, i, f'loss - {avg_loss.item()}')
 
@@ -525,8 +547,12 @@ def main(args: DictConfig):
                     **log,
                     'epoch': epoch,
                     'iter': i,
-                    'loss': avg_loss.item()
+                    "accuracy": avg_accuracy,
+                    'loss': avg_loss.item(),
+                    'forward_loss': avg_forward_loss.item(),
+                    'inverse_loss': avg_inverse_loss.item()
                 }
+                # st()
 
             if i % SAVE_EVERY_N_STEPS == 0:
                 # st()
@@ -534,7 +560,10 @@ def main(args: DictConfig):
                 os.makedirs(f"checkpoints/{run_name}", exist_ok=True)
                 save_model(f"checkpoints/{run_name}/model.pt", epoch=epoch)
             # st()
-            if i % args.log_images_freq == 0 and is_root:
+            # print(i)
+            if global_steps % args.log_images_freq == 0 and is_root:
+                # print("logging image")
+                # st()
                 sample_text = text[:1]
                 token_list = sample_text.masked_select(sample_text != 0).tolist()
                 decoded_text = tokenizer.decode(token_list)
@@ -560,17 +589,17 @@ def main(args: DictConfig):
         if LR_DECAY:
             distr_scheduler.step(avg_loss)
 
-        save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch)
+        save_model(f"checkpoints/{run_name}/model.pt", epoch=epoch)
 
-        if is_root:
-            # save trained model to wandb as an artifact every epoch's end
-            save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
+        # if is_root:
+        #     # save trained model to wandb as an artifact every epoch's end
+        #     save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
 
     save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch)
 
     if is_root:
-        wandb.save(DALLE_OUTPUT_FILE_NAME)
-        save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
+        # wandb.save(DALLE_OUTPUT_FILE_NAME)
+        # save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
         wandb.finish()
 
 
