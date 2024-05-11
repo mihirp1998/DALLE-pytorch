@@ -670,25 +670,26 @@ def main(args: DictConfig):
                         val_pbar.set_postfix(v_loss=val_loss.avg, v_acc=val_accuracy.avg)
                         val_pbar.update(1)
                         val_cnt += 1
+                    sample_text = text[:1].to('cuda')
+                    token_list = sample_text.masked_select(sample_text != 0).tolist()
+                    decoded_text = tokenizer.decode(token_list)
+
+                    if not avoid_model_calls:
+                        # CUDA index errors when we don't guard this
+                        image = dalle.generate_images(sample_text, filter_thres=0.9)  # topk sampling at 0.9
+                        image = image.detach().cpu().numpy()
+                        # move channel dim to last
+                        image = image.transpose(0, 2, 3, 1)
+
 
                 val_log = {
                     'val_loss': val_loss.avg,
                     'val_accuracy': val_accuracy.avg,
                     'val_forward_loss': val_forward_loss.avg,
-                    'val_inverse_loss': val_inverse_loss.avg
+                    'val_inverse_loss': val_inverse_loss.avg,
+                    'image': wandb.Image(image, caption=decoded_text)
                 }
-                sample_text = text[:1].to('cuda')
-                token_list = sample_text.masked_select(sample_text != 0).tolist()
-                decoded_text = tokenizer.decode(token_list)
 
-                if not avoid_model_calls:
-                    # CUDA index errors when we don't guard this
-                    image = dalle.generate_images(text[:1], filter_thres=0.9)  # topk sampling at 0.9
-                    image = image.detach().cpu().numpy()
-                    # move channel dim to last
-                    image = image.transpose(0, 2, 3, 1)
-
-                    val_log['image'] = wandb.Image(image, caption=decoded_text)
 
                 wandb.log(val_log, step=global_steps)
                 print(f'Step {global_steps}, Validation Loss: {val_loss.avg}, Validation Accuracy: {val_accuracy.avg}, Validation Forward Loss: {val_forward_loss.avg}, Validation Inverse Loss: {val_inverse_loss.avg}')

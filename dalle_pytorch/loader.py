@@ -1,7 +1,7 @@
 from pathlib import Path
 import torchvision
 from random import randint, choice
-
+import numpy as np
 import ipdb
 st = ipdb.set_trace
 import json
@@ -23,7 +23,8 @@ class TextImageDataset(Dataset):
                  transparent=False,
                  tokenizer=None,
                  shuffle=False,
-                 val=False
+                 val=False,
+                 corrupted_mnist=False,
                  ):
         """
         @param folder: Folder containing images and text files matched by their paths' respective "stem"
@@ -31,7 +32,7 @@ class TextImageDataset(Dataset):
         """
         super().__init__()
         self.shuffle = shuffle
-
+        self.corrupted_mnist = corrupted_mnist
 
         if folder == "cub200":
             self.dataset = Cub2011(root="/home/mprabhud/vision_datasets", download=True)
@@ -101,7 +102,6 @@ class TextImageDataset(Dataset):
     def __getitem__(self, ind):
         if self.dataset_name == "cub200":
             image, target, filename = self.dataset[ind]
-            # st()
             description = filename.split("/")[0].split(".")[1].replace("_"," ")
             image_tensor = self.image_transform(image)
             tokenized_text = self.tokenizer.tokenize(
@@ -112,6 +112,8 @@ class TextImageDataset(Dataset):
         elif self.dataset_name == "mnist":
             image, target = self.dataset[ind]
             description = self.dataset.classes[target]
+            if self.corrupted_mnist:
+                img_np = np.array(image)
             image_tensor = self.image_transform(image)
             tokenized_text = self.tokenizer.tokenize(
                 description,

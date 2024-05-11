@@ -18,4 +18,4 @@ export PYTHONUNBUFFERED=1
 
 # python run.py data=imagenet model=mlp batch_size=80 learning_rate=2e-2 mode=forward_forward
 # python run.py data=coco model=mlp num_encoder_layers=48 emb_size=768 mode=forward_forward
-python train_dalle.py exp=ro
+python train_dalle.py exp=ff train_test_split=0.8
