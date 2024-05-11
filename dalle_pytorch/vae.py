@@ -13,6 +13,7 @@ from math import sqrt, log
 from packaging import version
 
 from omegaconf import OmegaConf
+sys.path.insert(0,"/home/mprabhud/phd_projects/digen/taming-transformers/")
 from taming.models.vqgan import VQModel, GumbelVQ
 import importlib
 

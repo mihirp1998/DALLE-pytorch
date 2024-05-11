@@ -1,8 +1,8 @@
 defaults:
   - _self_  # Override values within this file with values in selected files.
   - model: t
-  - data: cifar
-  - exp: ff
+  - data: mnist
+  - exp: ro
   - override hydra/hydra_logging: disabled
   - override hydra/job_logging: disabled
 debug: False
@@ -10,11 +10,12 @@ project: invert_seg
 device: cuda
 
 # mode
-mode: forward_reverse_partial # one of "forward_only", "forward_forward", "forward_reverse_full", "forward_reverse_partial"
+mode: reverse_only # one of "forward_only", "forward_forward", "forward_reverse_full", "forward_reverse_partial", "reverse_only"
+train_test_split: 0.85
+# warmup_iters: 1000
 
-wandb_num_images: 4
-
-log_images_freq: 1000
+# wandb_num_images: 4 # not used
+# log_images_freq: 750 # same as val_every_n_steps
 
 vae_path: null
 
@@ -31,7 +32,7 @@ vqgan_model_path: null
 vqgan_config_path: null
 # help='path to your trained VQGAN config. This should be a .yaml file. (only valid when taming option is enabled)')
 
-image_text_folder: null
+image_text_folder: mnist
 # help='path to your folder of images and text for learning the DALL-E')
 
 wds: ''
@@ -44,7 +45,7 @@ resize_ratio: 0.75
 # help='Random resized crop lower ratio')
 
 chinese: False
-taming: False
+taming: True
 hug: False
 bpe_path: null
 # help='path to your BPE json file')
@@ -64,18 +65,20 @@ amp: False
 wandb_name: dalle_train_transformer
 # help='Name W&B will use when saving results.\ne.g. `--wandb_name "coco2017-full-sparse"`')
 
-wandb_entity: null
+wandb_entity: digen
 # help='(optional) Name of W&B team/entity to log to.')
 
 stable_softmax: False
 # help='Prevent values from becoming too large during softmax. Helps with stability in fp16 and Mixture of Quantization training.')
 
 flops_profiler: False
-epochs: 20
+epochs: 100
+val_every_n_steps: 100 # steps
+val_batches: 150 # around 1 min at batch size 50
 save_every_n_steps: 1000
 keep_n_checkpoints: null
 
-batch_size: 4
+batch_size: 50
 num_params: -1
 ga_steps: 1
 # 'Number of steps to accumulate gradients across per each iteration. DeepSpeed only.')
@@ -85,13 +88,14 @@ clip_grad_norm: 0.5
 # 'Clip gradient norm'
 lr_decay: False
 
-dim: 512
+dim: 64 # 512
+
 # help = 'Model dimension')
 
 text_seq_len: 256
 # help = 'Text sequence length')
 
-depth: 2
+depth: 12
 # help = 'Model depth')
 
 heads: 8
@@ -110,7 +114,8 @@ reversible: False
 
 loss_img_weight: 7
 # help = 'Image loss weight')
-
+# 279, 268, 7910
+# 277, 268, 4093
 attn_types: 'full'
 # help = 'comma separated list of attention types. attention type can be: full or sparse or axial_row or axial_col or conv_like.')
 

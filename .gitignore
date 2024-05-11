@@ -2,8 +2,13 @@
 outputs/
 *.pt
 taming/
+multirun/
+out_slurm/
 wandb/
 dalle-ds-cp/
+logs/
+pretrained
+data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

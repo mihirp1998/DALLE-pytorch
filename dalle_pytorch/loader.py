@@ -22,7 +22,8 @@ class TextImageDataset(Dataset):
                  resize_ratio=0.75,
                  transparent=False,
                  tokenizer=None,
-                 shuffle=False
+                 shuffle=False,
+                 val=False
                  ):
         """
         @param folder: Folder containing images and text files matched by their paths' respective "stem"
@@ -30,13 +31,13 @@ class TextImageDataset(Dataset):
         """
         super().__init__()
         self.shuffle = shuffle
-        
-        
+
+
         if folder == "cub200":
             self.dataset = Cub2011(root="/home/mprabhud/vision_datasets", download=True)
             self.dataset_name = "cub200"
         elif folder == "mnist":
-            self.dataset = torchvision.datasets.MNIST(root="/home/mprabhud/vision_datasets", download=True)
+            self.dataset = torchvision.datasets.MNIST(root="/home/mprabhud/vision_datasets", download=True, train=not val)
             self.dataset_name = "mnist"
             # st()
         else:
@@ -46,7 +47,7 @@ class TextImageDataset(Dataset):
                 *path.glob('**/*.jpeg'), *path.glob('**/*.bmp'),*path.glob('**/*.JPEG')
             ]
             imagenet_json = json.load(open("dalle_pytorch/imagenet.json")),
-            imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}        
+            imagenet_folder_name = {value[0]:value[1] for value in imagenet_json[0].values()}
             folder_names = [str(image_file).split("/")[-2] for image_file in image_files]
             class_names = [imagenet_folder_name[folder_name] for folder_name in folder_names]
             self.class_names= [class_name.replace("_"," ") for class_name in class_names]
@@ -107,7 +108,7 @@ class TextImageDataset(Dataset):
                 description,
                 self.text_len,
                 truncate_text=self.truncate_captions
-            ).squeeze(0)            
+            ).squeeze(0)
         elif self.dataset_name == "mnist":
             image, target = self.dataset[ind]
             description = self.dataset.classes[target]
@@ -116,7 +117,7 @@ class TextImageDataset(Dataset):
                 description,
                 self.text_len,
                 truncate_text=self.truncate_captions
-            ).squeeze(0)            
+            ).squeeze(0)
             # Image.fromarray((image_tensor * 255).to(torch.uint8).permute(1,2,0).numpy()).save("out.png")
             # st()
         else:

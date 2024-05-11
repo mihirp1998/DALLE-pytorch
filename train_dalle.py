@@ -25,6 +25,8 @@ import webdataset as wds
 from torchvision import transforms as T
 from PIL import Image
 from io import BytesIO
+from tqdm.auto import tqdm
+from dalle_pytorch.es import AverageMeter, EarlyStopping
 
 def exists(val):
     return val is not None
@@ -48,11 +50,10 @@ def cp_path_to_dir(cp_path, tag):
 @hydra.main(config_path="config", config_name="config")
 def main(args: DictConfig):
     # constants
-    # st()
     from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, ChineseTokenizer, YttmTokenizer
-    
-    
-    
+
+    print(args)
+
     WEBDATASET_IMAGE_TEXT_COLUMNS = tuple(args.wds.split(','))
     ENABLE_WEBDATASET = True if len(WEBDATASET_IMAGE_TEXT_COLUMNS) == 2 else False
 
@@ -71,6 +72,7 @@ def main(args: DictConfig):
     GRAD_CLIP_NORM = args.clip_grad_norm
     LR_DECAY = args.lr_decay
     SAVE_EVERY_N_STEPS = args.save_every_n_steps
+    VAL_EVERY_N_STEPS = args.val_every_n_steps
     KEEP_N_CHECKPOINTS = args.keep_n_checkpoints
 
     MODEL_DIM = args.dim
@@ -120,7 +122,7 @@ def main(args: DictConfig):
     # st()
     distr_backend = distributed_utils.set_backend_from_args(args)
     distr_backend.initialize()
-    
+
     using_deepspeed = \
         distributed_utils.using_backend(distributed_utils.DeepSpeedBackend)
 
@@ -159,6 +161,7 @@ def main(args: DictConfig):
             vae = OpenAIDiscreteVAE()
 
         resume_epoch = loaded_obj.get('epoch', 0)
+        global_steps = loaded_obj.get('global_steps', 0)
     else:
         if exists(VAE_PATH):
             vae_path = Path(VAE_PATH)
@@ -205,6 +208,7 @@ def main(args: DictConfig):
             share_input_output_emb=SHARE_INPUT_OUTPUT_EMB,
         )
         resume_epoch = 0
+        global_steps = 0
 
     IMAGE_SIZE = vae.image_size
     CHANNELS = vae.channels
@@ -287,7 +291,30 @@ def main(args: DictConfig):
             tokenizer=tokenizer,
             shuffle=is_shuffle,
         )
+        # split the dataset into a training and validation set
+        val_ds = TextImageDataset(
+            args.image_text_folder,
+            text_len=TEXT_SEQ_LEN,
+            image_size=IMAGE_SIZE,
+            transparent=TRANSPARENT,
+            resize_ratio=args.resize_ratio,
+            truncate_captions=args.truncate_captions,
+            tokenizer=tokenizer,
+            shuffle=is_shuffle,
+            val=True,
+        )
+
+        total_ds = ds + val_ds
+
+        # split the dataset into train-val split based on args.train_val_split
+        train_len = int(args.train_test_split * len(total_ds))
+        val_len = len(total_ds) - train_len
+        rgen = torch.Generator().manual_seed(int(args.train_test_split * 100))
+        ds, val_ds = torch.utils.data.random_split(total_ds, [train_len, val_len], generator=rgen)
         assert len(ds) > 0, 'dataset is empty'
+        print(f'{len(ds)} image-text pairs found for training')
+        print(f'{len(val_ds)} image-text pairs found for validation')
+
 
     if is_root:
         if not ENABLE_WEBDATASET:
@@ -314,12 +341,12 @@ def main(args: DictConfig):
     else:
         # Regular DataLoader for image-text-folder datasets
         dl = DataLoader(ds, batch_size=BATCH_SIZE, shuffle=is_shuffle, drop_last=True, sampler=data_sampler)
+        val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, drop_last=True, sampler=data_sampler)
 
     # initialize DALL-E
 
     dalle = DALLE(vae=vae, args=args, **dalle_params)
-    num_params = sum([param.numel() for param in dalle.parameters() if param.requires_grad])
-    args.num_params = num_params
+    # print in GB the memory used by the model
     # st()
 
     if not using_deepspeed:
@@ -363,12 +390,22 @@ def main(args: DictConfig):
             heads=HEADS,
             dim_head=DIM_HEAD
         )
+        config_dict = dict(args)
+
+        # calculate number of params
+        # num_params = sum([param.numel() for param in dalle.parameters()]) / 1_000_000
+        num_params = sum([param.numel() for param in dalle.parameters() if param.requires_grad]) / 1_000_000
+        print(f'Model has {num_params:.2f}M parameters')
+
+
+        config_dict['num_params'] = num_params
+
 
         run = wandb.init(
             project=args.wandb_name,
             entity=args.wandb_entity,
             resume=False,
-            config=dict(args),
+            config=config_dict,
             mode="disabled" if args.debug else "online"
         )
 
@@ -429,11 +466,12 @@ def main(args: DictConfig):
         distr_dalle.load_checkpoint(str(cp_dir))
 
 
-    def save_model(path, epoch=0):
+    def save_model(path, epoch=0, global_steps=0):
         save_obj = {
             'hparams': dalle_params,
             'vae_params': vae_params,
             'epoch': epoch,
+            'global_steps': global_steps,
             'version': __version__,
             'vae_class_name': vae.__class__.__name__
         }
@@ -489,14 +527,20 @@ def main(args: DictConfig):
     # See https://github.com/lucidrains/DALLE-pytorch/wiki/DeepSpeed-Checkpoints
 
     save_model(DALLE_OUTPUT_FILE_NAME, epoch=resume_epoch)
-    global_steps = 0
-
+    # make a tqdm for the training loop with total = epochs * len(dl)
+    pbar = tqdm(total=EPOCHS * len(dl), initial=resume_epoch * len(dl), desc='Training')
+    es = EarlyStopping(patience=args.patience, mode="max") # for validation accuracy early stopping
     for epoch in range(resume_epoch, EPOCHS):
         if data_sampler:
             data_sampler.set_epoch(epoch)
+        if es.early_stop:
+            print("Early stopping")
+            break
 
         for i, (text, images) in enumerate((dl if ENABLE_WEBDATASET else distr_dl)):
-            # st()
+            if es.early_stop:
+                print("Early stopping")
+                break
             global_steps += 1
             if i % 10 == 0 and is_root:
                 t = time.time()
@@ -505,13 +549,19 @@ def main(args: DictConfig):
                 images = images.half()
 
             text, images = map(lambda t: t.cuda(), (text, images))
-            
-            loss,_ = distr_dalle(text, images, return_loss=True)
-            # st()
-            forward_loss = loss.clone()
-            
+
+            if args.mode == 'reverse_only':
+                # classification loss
+                loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True)
+                inverse_loss = loss.clone()
+                forward_loss = torch.tensor(0.0)
+            else:
+                # generation loss
+                loss,_ = distr_dalle(text, images, return_loss=True)
+                forward_loss = loss.clone()
+
             if args.mode == "forward_forward":
-                inverse_loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True)    
+                inverse_loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True)
                 loss += inverse_loss
             elif args.mode == "forward_reverse_partial":
                 inverse_loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True, reverse_model=True)
@@ -531,17 +581,19 @@ def main(args: DictConfig):
             avg_loss = distr_backend.average_all(loss)
             avg_accuracy = distr_backend.average_all(accuracy)
             avg_forward_loss = distr_backend.average_all(forward_loss)
-            # st()
-            
-            if args.mode == "forward_forward" or args.mode == "forward_reverse_partial":
+
+            if args.mode == "forward_forward" or args.mode == "forward_reverse_partial" or args.mode == "reverse_only":
+                # classification
                 avg_inverse_loss = distr_backend.average_all(inverse_loss)
             else:
-                avg_inverse_loss =  0.0
+                avg_inverse_loss =  torch.tensor(0.0)
 
             log = {}
-            # st()
             if i % 10 == 0 and is_root:
-                print(epoch, i, f'loss - {avg_loss.item()}')
+                # print(epoch, i, f'loss - {avg_loss.item()}')
+                # update progress bar with the latest loss, accuracy, and other metrics
+                pbar.set_description(f'epoch={epoch}')
+                pbar.set_postfix(iter=i, loss=avg_loss.item(), t_acc=avg_accuracy.item(), fl=avg_forward_loss.item(), il=avg_inverse_loss.item())
 
                 log = {
                     **log,
@@ -552,54 +604,110 @@ def main(args: DictConfig):
                     'forward_loss': avg_forward_loss.item(),
                     'inverse_loss': avg_inverse_loss.item()
                 }
-                # st()
+
 
             if i % SAVE_EVERY_N_STEPS == 0:
-                # st()
-                run_name = wandb.run.name 
+                run_name = wandb.run.name if not args.debug else 'debug'
                 os.makedirs(f"checkpoints/{run_name}", exist_ok=True)
                 save_model(f"checkpoints/{run_name}/model.pt", epoch=epoch)
-            # st()
-            # print(i)
-            if global_steps % args.log_images_freq == 0 and is_root:
-                # print("logging image")
-                # st()
-                sample_text = text[:1]
+
+            if i % 10 == 9 and is_root:
+                sample_per_sec = BATCH_SIZE * 10 / (time.time() - t)
+                log["sample_per_sec"] = sample_per_sec
+
+            if i == 201 and args.flops_profiler:
+                raise StopIteration("Profiler has finished running. Stopping training early.")
+
+            if is_root and i % 10 == 0:
+                pbar.update(10)
+                wandb.log(log, step=global_steps)
+
+            if global_steps % VAL_EVERY_N_STEPS == 0 and is_root:
+
+
+                val_loss = AverageMeter()
+                val_accuracy = AverageMeter()
+                val_forward_loss = AverageMeter()
+                val_inverse_loss = AverageMeter()
+                val_cnt = 0
+                total_val = args.val_batches if 'val_batches' in args else len(val_dl)
+                total_val = min(total_val, len(val_dl))
+                val_pbar = tqdm(total=total_val, desc='Validation')
+
+                with torch.no_grad():
+                    for text, images in val_dl:
+                        if val_cnt > total_val:
+                            break
+                        if args.fp16:
+                            images = images.half()
+
+                        text, images = map(lambda t: t.cuda(), (text, images))
+
+                        if args.mode == 'reverse_only':
+                            # classification loss
+                            loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True)
+                            inverse_loss = loss.clone()
+                            forward_loss = torch.tensor(0.0)
+                        else:
+                            # generation loss
+                            loss,_ = distr_dalle(text, images, return_loss=True)
+                            forward_loss = loss.clone()
+
+                        if args.mode == "forward_forward":
+                            # joint classification and generation loss
+                            inverse_loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True)
+                            loss += inverse_loss
+                        elif args.mode == "forward_reverse_partial":
+                            # joint classification and generation loss
+                            inverse_loss,accuracy = distr_dalle(text, images, return_loss=True, inverse_mapping=True, reverse_model=True)
+                            loss += inverse_loss
+
+                        val_loss.update(loss.item(), 1)
+                        val_accuracy.update(accuracy.item(), 1)
+                        val_forward_loss.update(forward_loss.item(), 1)
+                        val_inverse_loss.update(inverse_loss.item(), 1)
+
+                        val_pbar.set_postfix(v_loss=val_loss.avg, v_acc=val_accuracy.avg)
+                        val_pbar.update(1)
+                        val_cnt += 1
+
+                val_log = {
+                    'val_loss': val_loss.avg,
+                    'val_accuracy': val_accuracy.avg,
+                    'val_forward_loss': val_forward_loss.avg,
+                    'val_inverse_loss': val_inverse_loss.avg
+                }
+                sample_text = text[:1].to('cuda')
                 token_list = sample_text.masked_select(sample_text != 0).tolist()
                 decoded_text = tokenizer.decode(token_list)
 
                 if not avoid_model_calls:
                     # CUDA index errors when we don't guard this
                     image = dalle.generate_images(text[:1], filter_thres=0.9)  # topk sampling at 0.9
+                    image = image.detach().cpu().numpy()
+                    # move channel dim to last
+                    image = image.transpose(0, 2, 3, 1)
 
-                if not avoid_model_calls:
-                    log['image'] = wandb.Image(image, caption=decoded_text)
+                    val_log['image'] = wandb.Image(image, caption=decoded_text)
 
-            if i % 10 == 9 and is_root:
-                sample_per_sec = BATCH_SIZE * 10 / (time.time() - t)
-                log["sample_per_sec"] = sample_per_sec
-                print(epoch, i, f'sample_per_sec - {sample_per_sec}')
-
-            if i == 201 and args.flops_profiler:
-                raise StopIteration("Profiler has finished running. Stopping training early.")
-
-            if is_root:
-                wandb.log(log)
+                wandb.log(val_log, step=global_steps)
+                print(f'Step {global_steps}, Validation Loss: {val_loss.avg}, Validation Accuracy: {val_accuracy.avg}, Validation Forward Loss: {val_forward_loss.avg}, Validation Inverse Loss: {val_inverse_loss.avg}')
+                should_save = es(val_accuracy.avg)
+                if should_save:
+                    save_model(f"checkpoints/{run_name}/model.pt", epoch=epoch, global_steps=global_steps)
 
         if LR_DECAY:
             distr_scheduler.step(avg_loss)
-
-        save_model(f"checkpoints/{run_name}/model.pt", epoch=epoch)
 
         # if is_root:
         #     # save trained model to wandb as an artifact every epoch's end
         #     save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
 
-    save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch)
+    save_model(DALLE_OUTPUT_FILE_NAME, epoch=epoch, global_steps=global_steps)
 
     if is_root:
         # wandb.save(DALLE_OUTPUT_FILE_NAME)
-        # save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
+        save_artifact(model_config, DALLE_OUTPUT_FILE_NAME)
         wandb.finish()
 
 

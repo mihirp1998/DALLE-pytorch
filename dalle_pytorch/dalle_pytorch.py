@@ -394,7 +394,7 @@ class DALLE(nn.Module):
         self.num_text_tokens = num_text_tokens # for offsetting logits index and calculating cross entropy loss
         self.num_image_tokens = num_image_tokens
         self.args = args
-        
+
         # st()
 
         self.text_seq_len = text_seq_len
@@ -407,7 +407,6 @@ class DALLE(nn.Module):
 
         self.vae = vae
         set_requires_grad(self.vae, False) # freeze VAE from being trained
-
         self.transformer = Transformer(
             dim = dim,
             causal = True,
@@ -607,7 +606,7 @@ class DALLE(nn.Module):
 
         text_range = torch.arange(self.text_seq_len, device = device) + (self.num_text_tokens - self.text_seq_len)
         text = torch.where(text == 0, text_range, text)
-        # add <bos>        
+        # add <bos>
         # st()
         text = F.pad(text, (1, 0), value = 0)
 
@@ -665,11 +664,11 @@ class DALLE(nn.Module):
             logits_mask = self.logits_mask_inv[:, :seq_len]
         else:
             logits_mask = self.logits_mask[:, :seq_len]
-        
+
         if exists(cache) and cache.get('offset'):
             assert False
             logits_mask = logits_mask[:, -1:]
-        
+
         # st()
         max_neg_value = -torch.finfo(logits.dtype).max
         logits.masked_fill_(logits_mask, max_neg_value)
@@ -687,9 +686,9 @@ class DALLE(nn.Module):
             labels = torch.cat((offsetted_image[:,1:],text), dim = 1)
         else:
             labels = torch.cat((text[:, 1:], offsetted_image), dim = 1)
-        
+
         logits = rearrange(logits, 'b n c -> b c n')
-        
+
         if inverse_mapping:
             # st()
             loss_text = F.cross_entropy(logits[:, :, self.text_seq_len:], labels[:, self.text_seq_len:])
