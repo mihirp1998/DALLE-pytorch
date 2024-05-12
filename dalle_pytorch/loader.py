@@ -8,9 +8,8 @@ import json
 import PIL
 import pickle
 import torch
-
 from cub2011 import Cub2011
-
+from dalle_pytorch import mnist_corruptions
 from torch.utils.data import Dataset
 from torchvision import transforms as T
 
@@ -48,8 +47,8 @@ class TextImageDataset(Dataset):
                  tokenizer=None,
                  shuffle=False,
                  val=False,
-                 corrupted_mnist=False,
-                 pretokenized=False
+                 pretokenized=False,
+                 corruption=None,
                  ):
         """
         @param folder: Folder containing images and text files matched by their paths' respective "stem"
@@ -57,7 +56,9 @@ class TextImageDataset(Dataset):
         """
         super().__init__()
         self.shuffle = shuffle
-        self.corrupted_mnist = corrupted_mnist
+        if corruption:
+            assert corruption in mnist_corruptions.CORRUPTIONS
+        self.corruption = corruption
         self.pretokenized = pretokenized
 
         if folder == "cub200":
@@ -151,6 +152,13 @@ class TextImageDataset(Dataset):
             # if self.corrupted_mnist:
             #     img_np = np.array(image)
             if not self.pretokenized:
+                if self.corruption is not None:
+                    # st()
+                    np_img = np.array(image)
+                    corruption_method = getattr(mnist_corruptions, self.corruption)
+                    corrupted_img = corruption_method(np_img)
+                    image = PIL.Image.fromarray(corrupted_img)
+                    pass
                 image_tensor = self.image_transform(image)
             tokenized_text = self.tokenizer.tokenize(
                 description,

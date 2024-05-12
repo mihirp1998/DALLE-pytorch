@@ -350,6 +350,7 @@ class CLIP(nn.Module):
         return loss
 
 # main DALL-E class
+# hello world
 
 class DALLE(nn.Module):
     def __init__(
@@ -633,6 +634,9 @@ class DALLE(nn.Module):
             # else image is already tokenized
 
             image_len = image.shape[1]
+            # check if others
+            # if type of tokens is float16, then make image as int16
+            image = image.int()
             image_emb = self.image_emb(image)
 
             image_emb += self.image_pos_emb(image_emb)

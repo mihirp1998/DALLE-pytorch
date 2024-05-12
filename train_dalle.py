@@ -367,6 +367,8 @@ def main(args: DictConfig):
     dalle = DALLE(vae=vae, args=args, **dalle_params)
     # print in GB the memory used by the model
     # st()
+    if args.disable_vae:
+        del dalle.vae # as good as removing it entirely from the code
 
     if not using_deepspeed:
         if args.fp16:
@@ -418,8 +420,7 @@ def main(args: DictConfig):
 
 
         config_dict['num_params'] = num_params
-
-
+        print(f'Depth: {DEPTH}, Heads: {HEADS}, Dim: {MODEL_DIM}')
         run = wandb.init(
             project=args.wandb_name,
             entity=args.wandb_entity,
@@ -550,6 +551,7 @@ def main(args: DictConfig):
     pbar = tqdm(total=EPOCHS * len(dl), initial=resume_epoch * len(dl), desc='Training')
     es = EarlyStopping(patience=args.patience, mode="max") # for validation accuracy early stopping
     for epoch in range(resume_epoch, EPOCHS):
+
         if data_sampler:
             data_sampler.set_epoch(epoch)
         if es.early_stop:
