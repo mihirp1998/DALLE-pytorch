@@ -6,11 +6,35 @@ import ipdb
 st = ipdb.set_trace
 import json
 import PIL
+import pickle
+import torch
 
 from cub2011 import Cub2011
 
 from torch.utils.data import Dataset
 from torchvision import transforms as T
+
+# class TokenizedDataset(Dataset):
+#     """
+#         Custom Dataset object to load and process data already tokenized and stored in
+#         (X, y) pairs where X is input tokens and y is target tokens (either classes or masks)
+#     """
+
+#     def __init__(self, data):
+#         self.data = data
+#         # st()
+
+#     def __len__(self):
+#         return len(self.data[0])
+
+#     def __getitem__(self, idx):
+#         X = torch.tensor(self.data[0][idx], dtype=torch.long)
+#         y = torch.tensor(self.data[1][idx], dtype=torch.long)
+#         d = {}
+#         d['src'] = X
+#         d['trg'] = y
+
+#         return d
 
 
 class TextImageDataset(Dataset):
@@ -25,6 +49,7 @@ class TextImageDataset(Dataset):
                  shuffle=False,
                  val=False,
                  corrupted_mnist=False,
+                 pretokenized=False
                  ):
         """
         @param folder: Folder containing images and text files matched by their paths' respective "stem"
@@ -33,14 +58,18 @@ class TextImageDataset(Dataset):
         super().__init__()
         self.shuffle = shuffle
         self.corrupted_mnist = corrupted_mnist
+        self.pretokenized = pretokenized
 
         if folder == "cub200":
             self.dataset = Cub2011(root="/home/mprabhud/vision_datasets", download=True)
             self.dataset_name = "cub200"
         elif folder == "mnist":
-            self.dataset = torchvision.datasets.MNIST(root="/home/mprabhud/vision_datasets", download=True, train=not val)
             self.dataset_name = "mnist"
-            # st()
+            self.dataset = torchvision.datasets.MNIST(root="/home/mprabhud/vision_datasets", download=True, train=not val) # loading in both cases to get classes
+            self.classes = self.dataset.classes
+            if self.pretokenized:
+                data_path = f'/home/mprabhud/sp/digen_data/{self.dataset_name}_vqgan.1024_total.pkl' # vqgan type hardcoded here, change if needed
+                self.dataset = pickle.load(open(data_path, 'rb'))
         else:
             path = Path(folder)
             image_files = [
@@ -82,6 +111,8 @@ class TextImageDataset(Dataset):
         if self.dataset_name == "cub200":
             return len(self.dataset)
         elif self.dataset_name == "mnist":
+            if self.pretokenized:
+                return len(self.dataset[0])
             return len(self.dataset)
         else:
             return len(self.image_files)
@@ -110,11 +141,17 @@ class TextImageDataset(Dataset):
                 truncate_text=self.truncate_captions
             ).squeeze(0)
         elif self.dataset_name == "mnist":
-            image, target = self.dataset[ind]
-            description = self.dataset.classes[target]
-            if self.corrupted_mnist:
-                img_np = np.array(image)
-            image_tensor = self.image_transform(image)
+            # st()
+            if self.pretokenized:
+                image, target = self.dataset[0][ind], self.dataset[1][ind]
+                image_tensor = torch.tensor(image, dtype=torch.int32)
+            else:
+                image, target = self.dataset[ind]
+            description = self.classes[target]
+            # if self.corrupted_mnist:
+            #     img_np = np.array(image)
+            if not self.pretokenized:
+                image_tensor = self.image_transform(image)
             tokenized_text = self.tokenizer.tokenize(
                 description,
                 self.text_len,

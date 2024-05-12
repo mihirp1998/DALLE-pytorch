@@ -377,6 +377,7 @@ class DALLE(nn.Module):
         shared_ff_ids = None,
         share_input_output_emb = False,
         optimize_for_inference = False,
+        pretokenized_images = False,
     ):
         super().__init__()
         assert isinstance(vae, (DiscreteVAE, OpenAIDiscreteVAE, VQGanVAE)), 'vae must be an instance of DiscreteVAE'
@@ -464,6 +465,7 @@ class DALLE(nn.Module):
         # self.logits_mask_inv.to(self.logits_mask.device)
         # st()
         self.loss_img_weight = loss_img_weight
+        self.pretokenized_images = pretokenized_images
 
 
     @torch.no_grad()
@@ -534,14 +536,17 @@ class DALLE(nn.Module):
         out = text
 
         if exists(img):
-            image_size = vae.image_size
-            assert img.shape[1] == 3 and img.shape[2] == image_size and img.shape[3] == image_size, f'input image must have the correct image size {image_size}'
+            if not self.pretokenized_images:
+                image_size = vae.image_size
+                assert img.shape[1] == 3 and img.shape[2] == image_size and img.shape[3] == image_size, f'input image must have the correct image size {image_size}'
 
-            indices = vae.get_codebook_indices(img)
-            num_img_tokens = default(num_init_img_tokens, int(0.4375 * image_seq_len))  # OpenAI used 14 * 32 initial tokens to prime
-            assert num_img_tokens < image_seq_len, 'number of initial image tokens for priming must be less than the total image token sequence length'
+                indices = vae.get_codebook_indices(img)
+                num_img_tokens = default(num_init_img_tokens, int(0.4375 * image_seq_len))  # OpenAI used 14 * 32 initial tokens to prime
+                assert num_img_tokens < image_seq_len, 'number of initial image tokens for priming must be less than the total image token sequence length'
 
-            indices = indices[:, :num_img_tokens]
+                indices = indices[:, :num_img_tokens]
+            else:
+                indices = img
             out = torch.cat((out, indices), dim = -1)
 
         prev_cache = None
@@ -616,14 +621,16 @@ class DALLE(nn.Module):
         seq_len = tokens.shape[1]
 
         if exists(image) and not is_empty(image):
-            is_raw_image = len(image.shape) == 4
+            if not self.pretokenized_images:
+                is_raw_image = len(image.shape) == 4
 
-            if is_raw_image:
-                image_size = self.vae.image_size
-                channels = self.vae.channels
-                assert tuple(image.shape[1:]) == (channels, image_size, image_size), f'invalid image of dimensions {image.shape} passed in during training'
-
-                image = self.vae.get_codebook_indices(image)
+                if is_raw_image:
+                    image_size = self.vae.image_size
+                    channels = self.vae.channels
+                    assert tuple(image.shape[1:]) == (channels, image_size, image_size), f'invalid image of dimensions {image.shape} passed in during training'
+                    # st()
+                    image = self.vae.get_codebook_indices(image)
+            # else image is already tokenized
 
             image_len = image.shape[1]
             image_emb = self.image_emb(image)

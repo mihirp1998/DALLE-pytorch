@@ -50,7 +50,7 @@ def cp_path_to_dir(cp_path, tag):
 @hydra.main(config_path="config", config_name="config")
 def main(args: DictConfig):
     # constants
-    from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, ChineseTokenizer, YttmTokenizer
+    from dalle_pytorch.tokenizer import tokenizer, HugTokenizer, YttmTokenizer
 
     print(args)
 
@@ -133,8 +133,8 @@ def main(args: DictConfig):
     if exists(args.bpe_path):
         klass = HugTokenizer if args.hug else YttmTokenizer
         tokenizer = klass(args.bpe_path)
-    elif args.chinese:
-        tokenizer = ChineseTokenizer()
+    # elif args.chinese:
+    #     tokenizer = ChineseTokenizer()
 
     # reconstitute vae
 
@@ -159,6 +159,7 @@ def main(args: DictConfig):
             vae = VQGanVAE(VQGAN_MODEL_PATH, VQGAN_CONFIG_PATH)
         else:
             vae = OpenAIDiscreteVAE()
+
 
         resume_epoch = loaded_obj.get('epoch', 0)
         global_steps = loaded_obj.get('global_steps', 0)
@@ -214,7 +215,6 @@ def main(args: DictConfig):
     CHANNELS = vae.channels
     TRANSPARENT = CHANNELS == 4
     IMAGE_MODE = 'RGBA' if CHANNELS == 4 else 'RGB'
-
     # configure OpenAI VAE for float16s
 
     if isinstance(vae, OpenAIDiscreteVAE) and args.fp16:
@@ -281,30 +281,48 @@ def main(args: DictConfig):
         filtered_dataset = w_dataset.select(filter_dataset)
         ds = filtered_dataset.map_dict(**image_text_mapping).map_dict(**image_mapping).to_tuple(mycap, myimg).batched(BATCH_SIZE / distr_backend.get_world_size(), partial=True)
     else:
-        ds = TextImageDataset(
-            args.image_text_folder,
-            text_len=TEXT_SEQ_LEN,
-            image_size=IMAGE_SIZE,
-            transparent=TRANSPARENT,
-            resize_ratio=args.resize_ratio,
-            truncate_captions=args.truncate_captions,
-            tokenizer=tokenizer,
-            shuffle=is_shuffle,
-        )
-        # split the dataset into a training and validation set
-        val_ds = TextImageDataset(
-            args.image_text_folder,
-            text_len=TEXT_SEQ_LEN,
-            image_size=IMAGE_SIZE,
-            transparent=TRANSPARENT,
-            resize_ratio=args.resize_ratio,
-            truncate_captions=args.truncate_captions,
-            tokenizer=tokenizer,
-            shuffle=is_shuffle,
-            val=True,
-        )
+        # if args.pretokenized:
+            # data_path = f'/home/mprabhud/sp/digen_data/{args.image_text_folder}_vqgan.1024_total.pkl' # vqgan type hardcoded here, change if needed
+            # jld = jl.load(open(data_path, 'rb'))
+            # ds = TokenizedDataset(jld)
+        # st()
+        if args.pretokenized:
+            total_ds = TextImageDataset(
+                args.image_text_folder,
+                text_len=TEXT_SEQ_LEN,
+                image_size=IMAGE_SIZE,
+                transparent=TRANSPARENT,
+                resize_ratio=args.resize_ratio,
+                truncate_captions=args.truncate_captions,
+                tokenizer=tokenizer,
+                shuffle=is_shuffle,
+                pretokenized=True
+            )
+        else:
+            ds = TextImageDataset(
+                args.image_text_folder,
+                text_len=TEXT_SEQ_LEN,
+                image_size=IMAGE_SIZE,
+                transparent=TRANSPARENT,
+                resize_ratio=args.resize_ratio,
+                truncate_captions=args.truncate_captions,
+                tokenizer=tokenizer,
+                shuffle=is_shuffle,
+            )
+            # split the dataset into a training and validation set
+            val_ds = TextImageDataset(
+                args.image_text_folder,
+                text_len=TEXT_SEQ_LEN,
+                image_size=IMAGE_SIZE,
+                transparent=TRANSPARENT,
+                resize_ratio=args.resize_ratio,
+                truncate_captions=args.truncate_captions,
+                tokenizer=tokenizer,
+                shuffle=is_shuffle,
+                val=True,
+            )
 
-        total_ds = ds + val_ds
+            total_ds = ds + val_ds
 
         # split the dataset into train-val split based on args.train_val_split
         train_len = int(args.train_test_split * len(total_ds))
@@ -344,6 +362,7 @@ def main(args: DictConfig):
         val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, drop_last=True, sampler=data_sampler)
 
     # initialize DALL-E
+
 
     dalle = DALLE(vae=vae, args=args, **dalle_params)
     # print in GB the memory used by the model
@@ -542,6 +561,7 @@ def main(args: DictConfig):
                 print("Early stopping")
                 break
             global_steps += 1
+            # st()
             if i % 10 == 0 and is_root:
                 t = time.time()
 
@@ -673,25 +693,22 @@ def main(args: DictConfig):
                     sample_text = text[:1].to('cuda')
                     token_list = sample_text.masked_select(sample_text != 0).tolist()
                     decoded_text = tokenizer.decode(token_list)
-
-                    if not avoid_model_calls:
+                    val_log = {
+                        'val_loss': val_loss.avg,
+                        'val_accuracy': val_accuracy.avg,
+                        'val_forward_loss': val_forward_loss.avg,
+                        'val_inverse_loss': val_inverse_loss.avg,
+                    }
+                    if not avoid_model_calls and not args.disable_vae:
                         # CUDA index errors when we don't guard this
                         image = dalle.generate_images(sample_text, filter_thres=0.9)  # topk sampling at 0.9
                         image = image.detach().cpu().numpy()
                         # move channel dim to last
                         image = image.transpose(0, 2, 3, 1)
+                        val_log['image'] = wandb.Image(image, caption=decoded_text)
 
+                    wandb.log(val_log, step=global_steps)
 
-                val_log = {
-                    'val_loss': val_loss.avg,
-                    'val_accuracy': val_accuracy.avg,
-                    'val_forward_loss': val_forward_loss.avg,
-                    'val_inverse_loss': val_inverse_loss.avg,
-                    'image': wandb.Image(image, caption=decoded_text)
-                }
-
-
-                wandb.log(val_log, step=global_steps)
                 print(f'Step {global_steps}, Validation Loss: {val_loss.avg}, Validation Accuracy: {val_accuracy.avg}, Validation Forward Loss: {val_forward_loss.avg}, Validation Inverse Loss: {val_inverse_loss.avg}')
                 should_save = es(val_accuracy.avg)
                 if should_save:

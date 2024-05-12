@@ -11,7 +11,9 @@ device: cuda
 
 # mode
 mode: reverse_only # one of "forward_only", "forward_forward", "forward_reverse_full", "forward_reverse_partial", "reverse_only"
-train_test_split: 0.85
+train_test_split: 0.8
+disable_vae: False # for not loading vae and thus can use smaller gpus to train
+pretokenized: True
 # warmup_iters: 1000
 
 # wandb_num_images: 4 # not used
@@ -44,7 +46,7 @@ truncate_captions: False
 resize_ratio: 0.75
 # help='Random resized crop lower ratio')
 
-chinese: False
+# chinese: False
 taming: True
 hug: False
 bpe_path: null

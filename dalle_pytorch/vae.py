@@ -16,13 +16,14 @@ from omegaconf import OmegaConf
 sys.path.insert(0,"/home/mprabhud/phd_projects/digen/taming-transformers/")
 from taming.models.vqgan import VQModel, GumbelVQ
 import importlib
-
+import torchvision.transforms as T
 import torch
 from torch import nn
 import torch.nn.functional as F
 
 from einops import rearrange
-
+import ipdb
+st = ipdb.set_trace
 from dalle_pytorch import distributed_utils
 
 # constants
@@ -158,6 +159,58 @@ def instantiate_from_config(config):
         raise KeyError("Expected key `target` to instantiate.")
     return get_obj_from_str(config["target"])(**config.get("params", dict()))
 
+
+class VQGANDataset:
+    def __init__(self, ds, image_size, image_mode, resize_ratio):
+        self.ds = ds
+        self.resize_ratio = resize_ratio
+        self.image_transform = T.Compose([
+            T.Lambda(lambda img: img.convert(image_mode)
+            if img.mode != image_mode else img),
+            T.RandomResizedCrop(image_size,
+                                scale=(self.resize_ratio, 1.),
+                                ratio=(1., 1.)),
+            T.ToTensor()
+        ])
+
+    # def preprocess(self, img, target_image_size=256):
+    #     """
+    #     input: RGB PIL image of shape (H, W, 3) - each value in [0, 255]
+    #     output: torch tensor of shape (1, 3, target_image_size, target_image_size) - each value in [-1, 1]
+    #     """
+    #     s = min(img.size)
+
+    #     if s < target_image_size:
+    #         raise ValueError(f'min dim for image {s} < {target_image_size}')
+
+    #     # already done in rescale
+    #     r = target_image_size / s
+    #     s = (round(r * img.size[1]), round(r * img.size[0]))
+    #     img = TF.resize(img, s, interpolation=PIL.Image.LANCZOS)
+    #     img = TF.center_crop(img, output_size=2 * [target_image_size])
+    #     img = T.ToTensor()(img)
+    #     img = preprocess_vqgan(img)
+    #     return img
+
+    def __getitem__(self, idx):
+        img, target = self.ds[idx]
+        # print(img, target)
+        # st()
+        # # img = rescale(img) # same as preprocess
+        # img = self.preprocess(img)
+
+        # if isinstance(target, Image.Image):
+        #     # target = rescale(target) # same
+        #     target = self.preprocess(target)
+        # img = T.ToTensor()(img)
+        img = self.image_transform(img)
+
+        return {'img': img, 'target': target}
+
+    def __len__(self):
+        return len(self.ds)
+
+
 class VQGanVAE(nn.Module):
     def __init__(self, vqgan_model_path=None, vqgan_config_path=None):
         super().__init__()
@@ -176,6 +229,7 @@ class VQGanVAE(nn.Module):
         config = OmegaConf.load(config_path)
 
         model = instantiate_from_config(config["model"])
+        self.z_dim = config.model.params.ddconfig.z_channels
 
         state = torch.load(model_path, map_location = 'cpu')['state_dict']
         model.load_state_dict(state, strict = False)
@@ -183,7 +237,7 @@ class VQGanVAE(nn.Module):
         print(f"Loaded VQGAN from {model_path} and {config_path}")
 
         self.model = model
-
+        self.config = config
         # f as used in https://github.com/CompVis/taming-transformers#overview-of-pretrained-models
         f = config.model.params.ddconfig.resolution / config.model.params.ddconfig.attn_resolutions[0]
 
@@ -192,6 +246,11 @@ class VQGanVAE(nn.Module):
         self.image_size = 256
         self.num_tokens = config.model.params.n_embed
         self.is_gumbel = isinstance(self.model, GumbelVQ)
+        self.codebook = self.model.quantize.embedding.weight.data
+        print(f'VQGAN Codebook shape: {self.codebook.shape}')
+        self.codebook_dict = {} # maps codebook vectors to their indices
+        for i, v in enumerate(self.codebook):
+            self.codebook_dict[tuple(v.cpu().numpy())] = i
 
         self._register_external_parameters()
 
@@ -231,3 +290,54 @@ class VQGanVAE(nn.Module):
 
     def forward(self, img):
         raise NotImplemented
+
+    def encode_dataset(self, dataset: VQGANDataset):
+        dataloader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=256, #4,
+                num_workers=1,
+        )
+
+        dataset_tokens = []
+        dataset_target = []
+        self.model = self.model.to('cuda')
+        for d in tqdm(dataloader, total=len(dataloader)):
+            img, target = d['img'], d['target']
+            img = img.to('cuda')
+            target = target.to('cuda')
+
+            # st()
+
+            # old code from digen
+            # z, _, [_, _, indices] = self.model.encode(img)
+            # # z1 = self.model.decode(z)
+            # # custom_to_pil(z1[0]).save("/home/mprabhud/sp/x1.png")
+            # z = z.detach()
+            # z_processed = [x.squeeze(0).view(self.z_dim, -1).T for x in z]
+            # z_prime = [self.replace_with_nearest(x) for x in z_processed]
+            # z_prime_indices = [self.get_indices(x).cpu().numpy() for x in z_prime]
+
+            z_prime_indices = self.get_codebook_indices(img) # (b, n)
+            z_prime_indices = z_prime_indices.cpu().numpy().tolist()
+
+            dataset_tokens.extend(z_prime_indices)
+
+            if target.dim() > 3:
+                # z, _, [_, _, indices] = self.model.encode(target)
+                # z = z.detach()
+                # z_processed = [x.squeeze(0).view(self.z_dim, -1).T for x in z]
+                # z_prime = [self.replace_with_nearest(x) for x in z_processed]
+                # z_prime_indices = [self.get_indices(x).cpu().numpy() for x in z_prime]
+
+                z_prime_indices = self.get_codebook_indices(target) # (b, n)
+                z_prime_indices = z_prime_indices.cpu().numpy().tolist()
+                dataset_target.extend(z_prime_indices)
+            else:
+                target = target.cpu().numpy()
+                dataset_target.extend([x for x in target])
+
+
+
+        return dataset_tokens, dataset_target
+
+
