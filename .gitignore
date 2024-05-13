@@ -9,6 +9,7 @@ dalle-ds-cp/
 logs/
 pretrained
 data/
+mnist_c/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -2,9 +2,9 @@ import argparse
 import sys
 sys.path.insert(0,"/home/mprabhud/phd_projects/digen/taming-transformers/")
 import ipdb
+import pandas as pd
 st = ipdb.set_trace
 from pathlib import Path
-import time
 from glob import glob
 import hydra
 import os
@@ -136,12 +136,13 @@ def main(args: DictConfig):
         klass = HugTokenizer if args.hug else YttmTokenizer
         tokenizer = klass(args.bpe_path)
 
-    st()
     # elif args.chinese:
     #     tokenizer = ChineseTokenizer()
 
     # reconstitute vae
-
+    RUN_NAME = DALLE_PATH.split('/')[-2]
+    print(f'Running in {RUN_NAME} run with {args.mode}')
+    # st()
     if RESUME:
         dalle_path = Path(DALLE_PATH)
         if using_deepspeed:
@@ -152,6 +153,7 @@ def main(args: DictConfig):
         else:
             assert dalle_path.exists(), 'DALL-E model file does not exist'
         loaded_obj = torch.load(str(dalle_path), map_location='cpu')
+        # st()
 
         dalle_params, vae_params, weights = loaded_obj['hparams'], loaded_obj['vae_params'], loaded_obj['weights']
         opt_state = loaded_obj.get('opt_state')
@@ -425,13 +427,13 @@ def main(args: DictConfig):
 
         config_dict['num_params'] = num_params
         print(f'Depth: {DEPTH}, Heads: {HEADS}, Dim: {MODEL_DIM}')
-        run = wandb.init(
-            project=args.wandb_name,
-            entity=args.wandb_entity,
-            resume=False,
-            config=config_dict,
-            mode="disabled" if args.debug else "online"
-        )
+        # run = wandb.init(
+        #     project=args.wandb_name,
+        #     entity=args.wandb_entity,
+        #     resume=False,
+        #     config=config_dict,
+        #     mode="disabled" if args.debug else "online"
+        # )
 
     # distribute
 
@@ -551,15 +553,20 @@ def main(args: DictConfig):
     # See https://github.com/lucidrains/DALLE-pytorch/wiki/DeepSpeed-Checkpoints
 
     possible_corruptions = cor.CORRUPTIONS
-    possible_corruptions
+    possible_corruptions = [None] + possible_corruptions
 
     val_loss = AverageMeter()
     val_accuracy = AverageMeter()
     val_forward_loss = AverageMeter()
     val_inverse_loss = AverageMeter()
 
-    for corruption in possible_corruptions:
-        print(f'Evaluating on corruption {corruption}')
+    # st()
+    save_path = os.path.join('mnist_c', RUN_NAME)# , f'val_log_{corruption}.csv')
+    os.makedirs(save_path, exist_ok=True)
+    all_res = []
+
+    for i, corruption in enumerate(possible_corruptions[::-1]):
+        print(f'{i+1} Evaluating on corruption {corruption}')
         # for each corruption, load it's dataset
         ds = TextImageDataset(
             args.image_text_folder,
@@ -604,9 +611,6 @@ def main(args: DictConfig):
         # total_val = min(total_val, len(val_dl))
         total_val = len(val_dl)
         val_pbar = tqdm(total=total_val, desc=f'Val {corruption}')
-
-
-        val_pbar = tqdm(total=total_val, desc='Validation')
         with torch.no_grad():
             for text, images in val_dl:
                 if args.fp16:
@@ -641,29 +645,56 @@ def main(args: DictConfig):
                 val_pbar.set_postfix(v_loss=val_loss.avg, v_acc=val_accuracy.avg)
                 val_pbar.update(1)
                 # val_cnt += 1
+                # break
             sample_text = text[:1].to('cuda')
             token_list = sample_text.masked_select(sample_text != 0).tolist()
+            # store original image at save_path/corruption_name_original.png
+            original_image = images[0].detach().cpu().numpy()
+            original_image = original_image.transpose(1, 2, 0)
+            original_image = Image.fromarray((original_image * 255).astype('uint8'))
+
             decoded_text = tokenizer.decode(token_list)
+            original_image.save(os.path.join(save_path, f'{corruption}_original_{decoded_text}.png'))
             val_log = {
+                'corruption': corruption if corruption is not None else 'None',
                 'val_loss': val_loss.avg,
                 'val_accuracy': val_accuracy.avg,
                 'val_forward_loss': val_forward_loss.avg,
                 'val_inverse_loss': val_inverse_loss.avg,
             }
+            # store the val_log in a file
+
+            # print(f'Saving val_log to {save_path}')
+            # save as csv
+            # make pandas dataframe
+            # df = pd.DataFrame(val_log, index=[0])
+            # with open(os.path.join(save_path, f'val_log_{corruption}.csv'), 'w') as f:
+                # df.to_csv(f, index=False)
+
+            all_res.append(val_log)
+
             if not args.disable_vae:
                 # CUDA index errors when we don't guard this
                 image = dalle.generate_images(sample_text, filter_thres=0.9)  # topk sampling at 0.9
                 image = image.detach().cpu().numpy()
                 # move channel dim to last
                 image = image.transpose(0, 2, 3, 1)
-                val_log['image'] = wandb.Image(image, caption=decoded_text)
+                # make into PIL image and save to save_path/corrpution_name_decoded_text.png
+                image = Image.fromarray((image[0] * 255).astype('uint8'))
+                image.save(os.path.join(save_path, f'{corruption}_predicted_{decoded_text}.png'))
+                # val_log['image'] = wandb.Image(image, caption=decoded_text)
 
-            wandb.log(val_log, step=global_steps)
+            # wandb.log(val_log, step=global_steps)
+
+
 
         print(f'Corruption {corruption}, Validation Loss: {val_loss.avg}, Validation Accuracy: {val_accuracy.avg}, Validation Forward Loss: {val_forward_loss.avg}, Validation Inverse Loss: {val_inverse_loss.avg}')
-        break
 
-    wandb.finish()
+    # save the results to a file
+    df = pd.DataFrame(all_res)
+    df.to_csv(os.path.join(save_path, 'val_log.csv'), index=False)
+
+    # wandb.finish()
 
 
 

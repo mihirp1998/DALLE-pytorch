@@ -132,6 +132,7 @@ class TextImageDataset(Dataset):
         return self.sequential_sample(ind=ind)
 
     def __getitem__(self, ind):
+        # st()
         if self.dataset_name == "cub200":
             image, target, filename = self.dataset[ind]
             description = filename.split("/")[0].split(".")[1].replace("_"," ")
@@ -153,12 +154,10 @@ class TextImageDataset(Dataset):
             #     img_np = np.array(image)
             if not self.pretokenized:
                 if self.corruption is not None:
-                    # st()
-                    np_img = np.array(image)
+                    # np_img = np.array(image)
                     corruption_method = getattr(mnist_corruptions, self.corruption)
-                    corrupted_img = corruption_method(np_img)
+                    corrupted_img = corruption_method(image)
                     image = PIL.Image.fromarray(corrupted_img)
-                    pass
                 image_tensor = self.image_transform(image)
             tokenized_text = self.tokenizer.tokenize(
                 description,
