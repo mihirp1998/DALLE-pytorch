@@ -554,18 +554,20 @@ def main(args: DictConfig):
 
     possible_corruptions = cor.CORRUPTIONS
     possible_corruptions = [None] + possible_corruptions
+    # possible_corruptions = [None]
 
-    val_loss = AverageMeter()
-    val_accuracy = AverageMeter()
-    val_forward_loss = AverageMeter()
-    val_inverse_loss = AverageMeter()
+
 
     # st()
-    save_path = os.path.join('mnist_c', RUN_NAME)# , f'val_log_{corruption}.csv')
+    save_path = os.path.join('mnist_c2', RUN_NAME)# , f'val_log_{corruption}.csv')
     os.makedirs(save_path, exist_ok=True)
     all_res = []
 
-    for i, corruption in enumerate(possible_corruptions[::-1]):
+    for i, corruption in enumerate(possible_corruptions):
+        val_loss = AverageMeter()
+        val_accuracy = AverageMeter()
+        val_forward_loss = AverageMeter()
+        val_inverse_loss = AverageMeter()
         print(f'{i+1} Evaluating on corruption {corruption}')
         # for each corruption, load it's dataset
         ds = TextImageDataset(

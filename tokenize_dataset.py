@@ -16,6 +16,7 @@ st = ipdb.set_trace
 from diffusion import datasets
 # from vqgan import VQGAN_Engine, custom_to_pil
 from dalle_pytorch.vae import VQGanVAE, VQGANDataset
+from wilds import get_dataset
 
 import ipdb
 st = ipdb.set_trace

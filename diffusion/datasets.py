@@ -12,12 +12,16 @@ from diffusion.dataset.coco import CocoSegmentation
 from diffusion.dataset.imagenet_classnames import get_classnames
 from diffusion.dataset.nyudepth import NYUDepth
 from diffusion.dataset.objectnet import ObjectNetBase
+from wilds import get_dataset
 from diffusion.utils import (
     COCO_DATASET_ROOT,
     DATASET_ROOT,
     NYUDEPTHv2_DATASET_ROOT,
     get_classes_templates,
 )
+
+import ipdb
+st = ipdb.set_trace
 
 IMAGENET_A_CLASSES = [
     6, 11, 13, 15, 17, 22, 23, 27, 30, 37, 39, 42, 47, 50, 57, 70, 71, 76, 79, 89, 90, 94, 96, 97, 99, 105, 107, 108,
@@ -191,6 +195,11 @@ def get_target_dataset(name: str, train=False, transform=None, target_transform=
         dataset = NYUDepth(images_root=NYUDEPTHv2_DATASET_ROOT, split='nyu2_train' if train else "nyu2_test")
         dataset.class_to_idx = None
         dataset.file_to_class = None
+    elif name == "fmow":
+        # fmow_path = os.path.join(DATASET_ROOT, 'wilds_fmow_v1.1')
+        fmow_path = os.path.join(DATASET_ROOT, 'wilds_fmow')
+        st()
+        dataset = get_dataset("fmow", root_dir=fmow_path, download=False)
     else:
         raise ValueError(f"Dataset {name} not supported.")
 

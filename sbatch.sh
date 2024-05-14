@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
-#SBATCH --exclude=matrix-0-18,matrix-0-16,matrix-0-22,matrix-0-36,matrix-1-22
+#SBATCH --exclude=matrix-0-18,matrix-0-16,matrix-0-22,matrix-0-36,matrix-1-22,matrix-3-28,matrix-3-26
 source /home/mprabhud/.bashrc
 conda activate vlr
 cd /home/mprabhud/sp/DALLE-pytorch
